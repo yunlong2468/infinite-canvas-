@@ -565,6 +565,12 @@ function pasteNodes() {
       if (newSrc && newTgt) addConnection(newSrc, newTgt);
     });
   }
+  // 粘贴后自动选中新节点
+  Object.values(idMap).forEach(function(nid) {
+    if (nid.indexOf('note_') === 0) selectedNoteIds.push(nid);
+    else selectedMediaIds.push(nid);
+  });
+  refreshSelections();
   autoSave();
   toast('已粘贴 ' + clipboard.nodes.length + ' 个节点', '');
 }
