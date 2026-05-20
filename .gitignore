@@ -1,0 +1,10 @@
+node_modules/
+data.db
+uploads/
+*.db
+*.db-journal
+check_syntax.js
+run_check.bat
+backfill_assets.js
+start.bat
+*.bak

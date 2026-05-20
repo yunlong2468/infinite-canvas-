@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>生图设置</title>
+<style>
+:root { --bg:#0D0D0D; --panel:#171717; --text:#fff; --text2:#A1A1AA; --accent:#05A3C5; --border:rgba(255,255,255,0.08); --radius:12px; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Inter','Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; min-height:100vh; }
+.topbar { display:flex; align-items:center; justify-content:space-between; padding:0 16px; height:44px; background:var(--panel); border-bottom:0.5px solid var(--border); }
+.topbar a { color:var(--text2); text-decoration:none; font-size:12px; }
+.topbar a:hover { color:var(--text); }
+.container { max-width:520px; margin:40px auto; padding:0 20px; }
+.card { background:var(--panel); border:0.5px solid var(--border); border-radius:var(--radius); padding:24px; margin-bottom:16px; }
+.card h2 { font-size:15px; margin-bottom:16px; color:var(--accent); }
+.field { margin-bottom:14px; }
+.field label { display:block; font-size:12px; color:var(--text2); margin-bottom:4px; }
+.field input, .field select { width:100%; padding:8px 12px; background:rgba(255,255,255,0.04); border:0.5px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; font-family:inherit; outline:none; }
+.field input:focus, .field select:focus { border-color:var(--accent); }
+select option { background:#171717; color:#e0e0e0; }
+.btn { padding:8px 20px; border-radius:6px; border:none; cursor:pointer; font-size:13px; font-family:inherit; }
+.btn-primary { background:var(--accent); color:#fff; }
+.btn-primary:hover { opacity:0.85; }
+.msg { font-size:12px; margin-top:8px; padding:6px 10px; border-radius:4px; display:none; }
+.msg.ok { background:rgba(0,200,100,0.1); color:#0c8; display:block; }
+.msg.err { background:rgba(245,63,63,0.1); color:#F53F3F; display:block; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span style="font-weight:600;">⚙️ 生图设置</span>
+  <a id="linkBack" href="/canvas.html">← 返回画布</a>
+</div>
+<div class="container">
+  <div class="card">
+    <h2>🔑 yijiarj API 配置</h2>
+    <div class="field"><label>API Key</label><input type="password" id="apiKey" placeholder="sk-xxx..."></div>
+    <div class="field"><label>API 端点</label><input type="text" id="apiUrl" placeholder="https://api.yijiarj.cn/v1/chat/completions"></div>
+    <div class="field"><label>模型</label><input type="text" id="model" placeholder="image2"></div>
+    <div class="field"><label>默认尺寸</label>
+      <select id="defaultSize">
+        <option value="1:1">1:1</option>
+        <option value="5:4">5:4</option>
+        <option value="4:3">4:3</option>
+        <option value="3:2">3:2</option>
+        <option value="16:9">16:9</option>
+        <option value="9:16">9:16 竖屏</option>
+        <option value="21:9">21:9</option>
+        <option value="4:5">4:5</option>
+        <option value="3:4">3:4</option>
+        <option value="2:3">2:3</option>
+      </select>
+    </div>
+    <div class="field"><label>请求间隔（秒）</label><input type="number" id="interval" min="1" max="30" step="0.5" value="3"></div>
+    <button class="btn btn-primary" onclick="save()">💾 保存设置</button>
+    <div class="msg" id="msg"></div>
+  </div>
+</div>
+<script>
+function encodeId(id) { return parseInt(id) * 1114514; }
+function decodeId(enc) { var n = parseInt(enc); return isNaN(n) ? 1 : Math.round(n / 1114514); }
+var projectId = decodeId(new URLSearchParams(location.search).get('pid'));
+document.getElementById('linkBack').href = '/canvas.html?pid=' + encodeId(projectId);
+var token = localStorage.getItem('canvas_token');
+if (!token) { location.replace('/login.html'); }
+var API = '/api';
+
+function api(method, path, body) {
+  var opts = { method:method, headers:{'Content-Type':'application/json','Authorization':'Bearer '+token} };
+  if (body) opts.body = JSON.stringify(body);
+  return fetch(API+path, opts).then(function(r) {
+    if (r.status===401) { localStorage.removeItem('canvas_token'); location.replace('/login.html'); return Promise.reject(); }
+    return r.json();
+  });
+}
+
+function showMsg(text, cls) {
+  var m = document.getElementById('msg'); m.textContent = text; m.className = 'msg '+cls;
+  setTimeout(function() { m.className = 'msg'; }, 3000);
+}
+
+api('GET','/image-gen-settings').then(function(s) {
+  document.getElementById('apiKey').value = s.api_key || '';
+  document.getElementById('apiUrl').value = s.api_url || 'https://api.yijiarj.cn/v1/chat/completions';
+  document.getElementById('model').value = s.model || 'image2';
+  document.getElementById('defaultSize').value = s.default_size || '9:16';
+  document.getElementById('interval').value = s.request_interval || 3;
+});
+
+function save() {
+  api('PUT','/image-gen-settings', {
+    api_key: document.getElementById('apiKey').value.trim(),
+    api_url: document.getElementById('apiUrl').value.trim(),
+    model: document.getElementById('model').value.trim(),
+    default_size: document.getElementById('defaultSize').value,
+    request_interval: parseFloat(document.getElementById('interval').value) || 3
+  }).then(function(r) {
+    if (r.ok) showMsg('✅ 设置已保存', 'ok');
+    else showMsg('❌ 保存失败', 'err');
+  });
+}
+</script>
+</body>
+</html>

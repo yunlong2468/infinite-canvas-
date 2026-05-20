@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>无限画布 - 项目列表</title>
+<style>
+:root { --bg:#0D0D0D; --panel:#171717; --text:#fff; --text2:#A1A1AA; --accent:#05A3C5; --border:rgba(255,255,255,0.08); --radius:12px; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Inter','Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; min-height:100vh; }
+.topbar { display:flex; align-items:center; justify-content:space-between; padding:14px 24px; background:var(--panel); border-bottom:0.5px solid var(--border); }
+.topbar h1 { font-size:18px; }
+.topbar .user-area { display:flex; align-items:center; gap:14px; }
+.topbar .user { font-size:13px; color:var(--accent); }
+.topbar button { padding:6px 16px; background:rgba(245,63,63,0.15); color:#F53F3F; border:0.5px solid rgba(245,63,63,0.3); border-radius:6px; cursor:pointer; font-size:12px; font-family:inherit; }
+.container { max-width:1200px; margin:0 auto; padding:20px 24px; }
+.toolbar { display:flex; gap:10px; margin-bottom:24px; flex-wrap:wrap; }
+.toolbar input { flex:1; min-width:200px; padding:10px 14px; background:#0a0a0a; border:0.5px solid var(--border); border-radius:8px; color:var(--text); font-size:14px; font-family:inherit; outline:none; }
+.toolbar input:focus { border-color:var(--accent); }
+.btn { padding:10px 20px; border-radius:8px; border:none; cursor:pointer; font-size:14px; font-family:inherit; font-weight:600; white-space:nowrap; transition:opacity 0.2s; }
+.btn:hover { opacity:0.85; }
+.btn-primary { background:var(--accent); color:#fff; }
+/* 网格布局 */
+.project-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:16px; }
+@media (max-width:520px) { .project-grid { grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:10px; } }
+/* 项目卡片 */
+.project-card {
+    background:var(--panel); border:0.5px solid var(--border); border-radius:var(--radius);
+    overflow:hidden; cursor:pointer; transition:border-color 0.2s,transform 0.15s;
+    display:flex; flex-direction:column;
+}
+.project-card:hover { border-color:var(--accent); transform:translateY(-2px); }
+/* 缩略图区 */
+.card-thumb {
+    position:relative; aspect-ratio:16/10; background:linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    display:flex; align-items:center; justify-content:center; overflow:hidden;
+}
+.card-thumb::after {
+    content:''; position:absolute; inset:0;
+    background:radial-gradient(circle at 30% 40%, rgba(255,255,255,0.03) 0%, transparent 60%),
+               radial-gradient(circle at 70% 60%, rgba(5,163,197,0.08) 0%, transparent 50%);
+}
+.thumb-content { position:relative; z-index:1; display:flex; gap:16px; align-items:center; }
+.thumb-stat { text-align:center; }
+.thumb-stat .num { font-size:28px; font-weight:800; color:var(--text); line-height:1; }
+.thumb-stat .lbl { font-size:10px; color:var(--text2); margin-top:4px; text-transform:uppercase; letter-spacing:0.5px; }
+@media (max-width:520px) { .thumb-stat .num { font-size:22px; } .thumb-content { gap:10px; } }
+/* 项目信息（缩略图下方） */
+.card-name {
+    font-size:14px; font-weight:600; padding:12px 14px 4px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.card-meta { font-size:11px; color:var(--text2); padding:0 14px 12px; }
+/* 底部操作栏 */
+.card-actions { display:flex; gap:4px; padding:8px 10px; border-top:0.5px solid var(--border); margin-top:auto; }
+.card-actions button {
+    flex:1; padding:5px 0; border-radius:6px; border:0.5px solid var(--border);
+    background:transparent; color:var(--text2); cursor:pointer; font-size:11px; font-family:inherit;
+    transition:all 0.1s; display:flex; align-items:center; justify-content:center; gap:3px;
+}
+.card-actions button:hover { background:var(--border); color:var(--text); }
+.card-actions .act-delete:hover { background:rgba(245,63,63,0.1); color:#F53F3F; border-color:rgba(245,63,63,0.3); }
+/* 新建卡片 */
+.card-new {
+    background:transparent; border:1px dashed var(--border); border-radius:var(--radius);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    aspect-ratio:16/10; cursor:pointer; transition:border-color 0.2s; min-height:160px;
+}
+.card-new:hover { border-color:var(--accent); }
+.card-new .plus { font-size:36px; color:var(--text2); margin-bottom:8px; }
+.card-new .label { font-size:13px; color:var(--text2); }
+/* 重命名 */
+.rename-input {
+    background:transparent; border:none; border-bottom:1px dashed var(--accent);
+    color:var(--text); font-size:14px; font-weight:600; font-family:inherit; outline:none;
+    width:100%; padding:2px 0; margin:0 14px;
+}
+.empty-state { text-align:center; padding:60px 20px; color:var(--text2); grid-column:1/-1; }
+</style>
+</head>
+<body>
+<div class="topbar">
+    <h1>🎨 无限画布</h1>
+    <div class="user-area">
+        <a href="/agents.html" style="color:var(--accent);text-decoration:none;font-size:13px;margin-right:8px;">🤖 智能体</a>
+        <span class="user" id="usernameDisplay"></span>
+        <button onclick="logout()">退出登录</button>
+    </div>
+</div>
+<div class="container">
+    <div class="toolbar">
+        <input type="text" id="newName" placeholder="项目名称（留空自动命名）" maxlength="30" onkeydown="if(event.key==='Enter')createProject()">
+        <button class="btn btn-primary" onclick="createProject()">+ 新建项目</button>
+    </div>
+    <div class="project-grid" id="projectGrid"><div class="empty-state">加载中...</div></div>
+</div>
+
+<script>
+var token = localStorage.getItem('canvas_token');
+if (!token) { window.location.replace('/login.html'); }
+
+var API = '/api';
+function api(method, path, body) {
+    var opts = { method:method, headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+token } };
+    if (body) opts.body = JSON.stringify(body);
+    return fetch(API+path, opts).then(function(r) {
+        if (r.status===401) { localStorage.removeItem('canvas_token'); localStorage.removeItem('canvas_username'); window.location.replace('/login.html'); return Promise.reject(); }
+        return r.json().catch(function(){ return null; });
+    });
+}
+
+api('GET','/me').then(function(d) {
+    document.getElementById('usernameDisplay').textContent = '👤 ' + d.username;
+});
+
+function loadProjects() {
+    api('GET','/projects').then(function(projects) {
+        var grid = document.getElementById('projectGrid');
+        if (!projects || projects.length===0) {
+            grid.innerHTML = '<div class="empty-state"><p style="font-size:16px;margin-bottom:6px;">还没有项目</p><p>点击上方按钮创建你的第一个画布</p></div><div class="card-new" onclick="createProject()"><div class="plus">+</div><div class="label">新建项目</div></div>';
+            return;
+        }
+        // 加载每个项目的缩略图数据
+        var cards = projects.map(function(p) {
+            var d = new Date(p.updated_at+'Z');
+            var time = formatTime(d);
+            return api('GET','/canvas?projectId='+p.id).then(function(data) {
+                var notesCount = data && data.notes ? data.notes.length : 0;
+                var mediaCount = data && data.mediaNodes ? data.mediaNodes.length : 0;
+                var connCount = data && data.connections ? data.connections.length : 0;
+                return { id:p.id, name:p.name, time:time, notes:notesCount, media:mediaCount, conns:connCount };
+            }).catch(function() {
+                return { id:p.id, name:p.name, time:time, notes:0, media:0, conns:0 };
+            });
+        });
+        Promise.all(cards).then(function(items) {
+            var html = items.map(function(p) {
+                var gradient = getGradient(p.id);
+                return '<div class="project-card" data-id="'+p.id+'">'+
+                    '<div class="card-thumb" style="background:'+gradient+'" onclick="openProject('+p.id+')">'+
+                    '<div class="thumb-content">'+
+                    '<div class="thumb-stat"><div class="num">'+p.notes+'</div><div class="lbl">便签</div></div>'+
+                    '<div class="thumb-stat"><div class="num">'+p.media+'</div><div class="lbl">媒体</div></div>'+
+                    '<div class="thumb-stat"><div class="num">'+p.conns+'</div><div class="lbl">连线</div></div>'+
+                    '</div></div>'+
+                    '<div class="card-name" onclick="openProject('+p.id+')">'+escHtml(p.name)+'</div>'+
+                    '<div class="card-meta">'+p.time+'</div>'+
+                    '<div class="card-actions">'+
+                    '<button onclick="event.stopPropagation();startRename(this,'+p.id+')">✏️ 重命名</button>'+
+                    '<button class="act-delete" onclick="event.stopPropagation();deleteProject('+p.id+')">🗑️ 删除</button>'+
+                    '</div></div>';
+            }).join('');
+            html += '<div class="card-new" onclick="createProject()"><div class="plus">+</div><div class="label">新建项目</div></div>';
+            grid.innerHTML = html;
+        });
+    });
+}
+
+function openProject(id) { window.location.href = '/canvas.html?pid=' + (parseInt(id) * 1114514); }
+
+var gradients = [
+    'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)',
+    'linear-gradient(135deg, #1a1a2e 0%, #1a3a2e 50%, #0f4f30 100%)',
+    'linear-gradient(135deg, #2e1a2e 0%, #3e1630 50%, #600f40 100%)',
+    'linear-gradient(135deg, #1a1a1a 0%, #2e2e1a 50%, #4f4f0f 100%)',
+    'linear-gradient(135deg, #1a2e2e 0%, #16303e 50%, #0f4060 100%)',
+];
+function getGradient(id) { return gradients[(id-1) % gradients.length]; }
+
+function startRename(btn, id) {
+    var card = btn.closest('.project-card');
+    var nameEl = card.querySelector('.card-name');
+    var oldName = nameEl.textContent;
+    var input = document.createElement('input');
+    input.className = 'rename-input';
+    input.value = oldName;
+    input.addEventListener('blur', function() { finishRename(id, input.value.trim()||oldName); });
+    input.addEventListener('keydown', function(ev) { if (ev.key==='Enter') input.blur(); });
+    nameEl.innerHTML = '';
+    nameEl.appendChild(input);
+    input.focus(); input.select();
+}
+function finishRename(id, name) {
+    api('PUT','/projects/'+id, { name:name }).then(function() { loadProjects(); });
+}
+function showConfirm(msg, cb) {
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';
+  ov.innerHTML = '<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:380px;">'+
+    '<div style="font-size:14px;margin-bottom:16px;line-height:1.5;color:#fff;">'+msg+'</div>'+
+    '<div style="display:flex;gap:8px;justify-content:flex-end;">'+
+      '<button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'div > div\').parentElement.remove();window._pcfm(false)">取消</button>'+
+      '<button style="padding:8px 18px;border-radius:6px;border:none;background:#05A3C5;color:#fff;cursor:pointer;font-family:inherit;" onclick="this.closest(\'div > div\').parentElement.remove();window._pcfm(true)">确定</button>'+
+    '</div></div>';
+  document.body.appendChild(ov);
+  window._pcfm = cb;
+  ov.addEventListener('click', function(e) { if (e.target===ov) { ov.remove(); cb(false); } });
+}
+function deleteProject(id) {
+    showConfirm('确定要删除此项目吗？所有数据将被永久删除。', function(ok) {
+        if (ok) { api('DELETE','/projects/'+id).then(function() { loadProjects(); }); }
+    });
+}
+function createProject() {
+    var name = document.getElementById('newName').value.trim();
+    api('POST','/projects', { name:name }).then(function(p) {
+        document.getElementById('newName').value = '';
+        if (p && p.id) window.location.href = '/canvas.html?pid=' + (p.id * 1114514);
+        else loadProjects();
+    });
+}
+function formatTime(d) {
+    var now = new Date();
+    var diff = now - d;
+    if (diff < 60000) return '刚刚';
+    if (diff < 3600000) return Math.floor(diff/60000)+' 分钟前';
+    if (diff < 86400000) return Math.floor(diff/3600000)+' 小时前';
+    return d.toLocaleDateString('zh-CN');
+}
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function logout() {
+  showConfirm('确定要退出登录吗？', function(ok) {
+    if (ok) { localStorage.removeItem('canvas_token'); localStorage.removeItem('canvas_username'); window.location.replace('/login.html'); }
+  });
+}
+
+loadProjects();
+
+// SSE 实时通知（互踢检测）
+(function() {
+  var sse = new EventSource('/api/sse?token=' + encodeURIComponent(token));
+  sse.addEventListener('message', function(e) {
+    try {
+      var d = JSON.parse(e.data);
+      if (d.type === 'kicked') {
+        localStorage.removeItem('canvas_token');
+        localStorage.removeItem('canvas_username');
+        window.location.replace('/login.html?reason=kicked');
+      }
+    } catch(ex) {}
+  });
+})();
+</script>
+</body>
+</html>

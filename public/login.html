@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>无限画布 - 登录</title>
+    <style>
+        :root {
+            --bg: #0D0D0D;
+            --panel: #171717;
+            --text: #fff;
+            --text2: #A1A1AA;
+            --accent: #05A3C5;
+            --border: rgba(255,255,255,0.08);
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter','Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .login-box {
+            background: var(--panel);
+            border: 0.5px solid var(--border);
+            border-radius: 16px;
+            padding: 40px;
+            width: 360px;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+        }
+        h1 {
+            font-size: 22px;
+            text-align: center;
+            margin-bottom: 4px;
+        }
+        .subtitle {
+            text-align: center;
+            color: var(--text2);
+            font-size: 13px;
+            margin-bottom: 28px;
+        }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        label {
+            display: block;
+            font-size: 12px;
+            color: var(--text2);
+            margin-bottom: 6px;
+        }
+        input {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0a0a0a;
+            border: 0.5px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus { border-color: var(--accent); }
+        button {
+            width: 100%;
+            padding: 12px;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.85; }
+        .switch {
+            text-align: center;
+            margin-top: 16px;
+            font-size: 13px;
+            color: var(--text2);
+        }
+        .switch a {
+            color: var(--accent);
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .error {
+            color: #F53F3F;
+            font-size: 12px;
+            text-align: center;
+            margin-top: 12px;
+            min-height: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>🎨 无限画布</h1>
+        <p class="subtitle" id="modeText">登录你的画布</p>
+        <div class="form-group">
+            <label>用户名</label>
+            <input type="text" id="username" placeholder="输入用户名" maxlength="20">
+        </div>
+        <div class="form-group">
+            <label>密码</label>
+            <input type="password" id="password" placeholder="输入密码">
+        </div>
+        <button id="submitBtn">登 录</button>
+        <p class="error" id="errorMsg"></p>
+        <p class="switch">
+            <span id="switchText">没有账号？</span>
+            <a id="switchLink">去注册</a>
+        </p>
+    </div>
+
+    <script>
+        var isLogin = true;
+        var modeText = document.getElementById('modeText');
+        var submitBtn = document.getElementById('submitBtn');
+        var switchLink = document.getElementById('switchLink');
+        var switchText = document.getElementById('switchText');
+        var errorMsg = document.getElementById('errorMsg');
+
+        // 检测是否被其他设备踢出
+        var params = new URLSearchParams(window.location.search);
+        if (params.get('reason') === 'kicked') {
+            localStorage.removeItem('canvas_token');
+            localStorage.removeItem('canvas_username');
+            errorMsg.textContent = '账号已在其他设备登录，请重新登录';
+        }
+
+        switchLink.addEventListener('click', function() {
+            isLogin = !isLogin;
+            if (isLogin) {
+                modeText.textContent = '登录你的画布';
+                submitBtn.textContent = '登 录';
+                switchText.textContent = '没有账号？';
+                switchLink.textContent = '去注册';
+            } else {
+                modeText.textContent = '创建新账号';
+                submitBtn.textContent = '注 册';
+                switchText.textContent = '已有账号？';
+                switchLink.textContent = '去登录';
+            }
+            errorMsg.textContent = '';
+        });
+
+        submitBtn.addEventListener('click', function() {
+            var username = document.getElementById('username').value.trim();
+            var password = document.getElementById('password').value;
+            errorMsg.textContent = '';
+
+            if (!username || !password) {
+                errorMsg.textContent = '请填写用户名和密码';
+                return;
+            }
+
+            var url = isLogin ? '/api/login' : '/api/register';
+            fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: username, password: password })
+            })
+            .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+            .then(function(result) {
+                if (!result.ok) {
+                    errorMsg.textContent = result.data.error || '操作失败';
+                    return;
+                }
+                localStorage.setItem('canvas_token', result.data.token);
+                localStorage.setItem('canvas_username', result.data.username);
+                window.location.replace('/projects.html');
+            })
+            .catch(function() {
+                errorMsg.textContent = '网络错误，请确认服务已启动';
+            });
+        });
+
+        // 回车提交
+        document.getElementById('password').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') submitBtn.click();
+        });
+
+        // 已登录则检测是否被踢出
+        var token = localStorage.getItem('canvas_token');
+        if (token) {
+            fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + token } })
+                .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+                .then(function(result) {
+                    if (result.ok && result.data.userId) {
+                        window.location.href = '/projects.html';
+                    } else if (result.data && result.data.error && result.data.error.indexOf('已在其他设备登录') >= 0) {
+                        localStorage.removeItem('canvas_token');
+                        localStorage.removeItem('canvas_username');
+                        errorMsg.textContent = '账号已在其他设备登录，请重新登录';
+                    }
+                })
+                .catch(function() {});
+        }
+    </script>
+</body>
+</html>
