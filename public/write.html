@@ -72,6 +72,13 @@ body { background:var(--bg); color:var(--text); font-family:'Inter','Segoe UI','
 .msg .think-toggle:hover { background:rgba(5,163,197,0.15); }
 .msg .think-body { display:none; font-size:10px; color:var(--text2); background:rgba(0,0,0,0.2); padding:6px 10px; border-radius:4px; margin-top:4px; border-left:2px solid var(--accent); white-space:pre-wrap; max-height:200px; overflow-y:auto; }
 .msg .think-body.show { display:block; }
+/* Agent 消息格式化 */
+.msg .bubble p { margin:0 0 6px; line-height:1.6; }
+.msg .bubble p:last-child { margin-bottom:0; }
+.msg .bubble br { display:block; content:''; margin-top:2px; }
+.msg-codeblock { background:rgba(0,0,0,0.4); border:0.5px solid rgba(255,255,255,0.1); border-radius:6px; padding:8px 10px; margin:6px 0; font-family:'Consolas','Monaco','Courier New',monospace; font-size:10px; line-height:1.5; white-space:pre-wrap; word-break:break-all; max-height:200px; overflow-y:auto; color:var(--text2); }
+.msg-codeblock::-webkit-scrollbar { width:3px; }
+.msg-codeblock::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.1); border-radius:2px; }
 
 /* 面板切换 */
 #panelChars { flex:1; display:none; flex-direction:column; overflow-y:auto; padding:8px; }
@@ -228,6 +235,29 @@ edDiv.addEventListener('input', function() {
 // ==================== Agent 消息系统 ====================
 var agentMsgs = [];
 
+function formatAgentContent(text) {
+  if (!text) return '';
+  // 1. 提取代码块 ```...```
+  var codeBlocks = [];
+  var t = text.replace(/```(\w*)\s*([\s\S]*?)```/g, function(_, lang, code) {
+    codeBlocks.push(code.trim());
+    return '%%CODEBLOCK_'+(codeBlocks.length-1)+'%%';
+  });
+  // 2. 安全转义
+  t = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // 3. 加粗 **text**
+  t = t.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  // 4. 段落 \n\n → </p><p>
+  t = '<p>'+t.split(/\n\n+/).join('</p><p>')+'</p>';
+  // 5. 单个换行 → <br>
+  t = t.replace(/\n/g, '<br>');
+  // 6. 代码块还原
+  codeBlocks.forEach(function(code, i) {
+    t = t.replace('%%CODEBLOCK_'+i+'%%', '<div class="msg-codeblock">'+code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>');
+  });
+  return t;
+}
+
 function renderAgentMessages() {
   var container = document.getElementById('agentMessages');
   if (!container) return;
@@ -247,9 +277,9 @@ function renderAgentMessages() {
       html += '<div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(m.agent||'agent')+'</div>';
       if (m.thinking) {
         html += '<span class="think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'">💭 思考过程</span>';
-        html += '<div class="think-body">'+escHtml(m.thinking)+'</div>';
+        html += '<div class="think-body">'+formatAgentContent(m.thinking)+'</div>';
       }
-      html += escHtml(m.content)+'</div></div>';
+      html += formatAgentContent(m.content)+'</div></div>';
     }
   });
   container.innerHTML = html;
