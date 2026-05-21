@@ -202,19 +202,48 @@ function renderAgentMessages() {
   container.scrollTop = container.scrollHeight;
 }
 
+var agentBusy = false;
+
 function sendAgentMessage() {
   var inp = document.getElementById('agentInput');
   var text = inp.value.trim();
-  if (!text) return;
+  if (!text || agentBusy) return;
   inp.value = '';
-  console.log('[Write] 用户发送: '+text);
+  inp.disabled = true;
+  agentBusy = true;
+  console.log('[Write] 用户发送: '+text.substring(0,100));
   agentMsgs.push({ type:'chat', role:'user', content:text });
   renderAgentMessages();
-  // 保存到服务端
-  api('POST','/writing-projects/'+projectId+'/conversations', { agent_type:'user', role:'user', content:text }).then(function(r) {
-    console.log('[Write] 消息已保存 id='+(r&&r.id));
+  // 显示Agent思考中
+  agentMsgs.push({ type:'chat', role:'assistant', agent:'orchestrator', content:'⏳ 思考中...', thinking:'' });
+  renderAgentMessages();
+  // 调用LLM
+  api('POST','/writing-projects/'+projectId+'/llm-call', { content:text }).then(function(r) {
+    // 移除思考中占位
+    agentMsgs.pop();
+    if (r && r.content) {
+      agentMsgs.push({ type:'chat', role:'assistant', agent:'orchestrator', content:r.content, thinking:r.thinking||'' });
+      console.log('[Write] 主Agent回复长度='+r.content.length+' thinking='+(r.thinking?r.thinking.length:0));
+    } else if (r && r.error) {
+      agentMsgs.push({ type:'system', content:'⚠️ '+r.error });
+      console.error('[Write] LLM调用失败: '+r.error);
+    } else {
+      agentMsgs.push({ type:'system', content:'⚠️ 无响应，请重试' });
+      console.error('[Write] LLM返回空');
+    }
+    renderAgentMessages();
+    agentBusy = false;
+    inp.disabled = false;
+    inp.focus();
+  }).catch(function(err) {
+    agentMsgs.pop();
+    agentMsgs.push({ type:'system', content:'⚠️ 网络错误: '+(err&&err.message||'未知') });
+    console.error('[Write] LLM调用异常:',err);
+    renderAgentMessages();
+    agentBusy = false;
+    inp.disabled = false;
+    inp.focus();
   });
-  // TODO P0.4: 调用主Agent LLM
 }
 
 // ==================== 初始化 ====================
@@ -241,12 +270,45 @@ api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs) {
   renderAgentMessages();
 });
 
-// SSE 实时通知（互踢检测）
+// ==================== SSE 实时通知 ====================
+// SSE-1: 互踢检测
 (function() {
   var sse = new EventSource('/api/sse?token='+encodeURIComponent(token));
   sse.addEventListener('message', function(e) {
     try { var d = JSON.parse(e.data); if (d.type==='kicked') { localStorage.removeItem('canvas_token'); localStorage.removeItem('canvas_username'); window.location.replace('/login.html?reason=kicked'); } } catch(ex) {}
   });
+  sse.onerror = function() { console.log('[Write] 踢出SSE断线，自动重连中...'); };
+})();
+
+// SSE-2: 写作Agent消息推送
+(function() {
+  var sseUrl = '/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);
+  var sse = new EventSource(sseUrl);
+  var reconnectTimer = null;
+  sse.addEventListener('message', function(e) {
+    try {
+      var d = JSON.parse(e.data);
+      if (d.type==='connected') { console.log('[Write] SSE已连接 projectId='+d.projectId); return; }
+      if (d.type==='agent-message' && d.msg) {
+        // 服务端推送的Agent消息
+        if (!agentBusy) {
+          agentMsgs.push({ type:'chat', role:'assistant', agent:d.msg.agent_type, content:d.msg.content, thinking:d.msg.thinking||'' });
+          renderAgentMessages();
+          console.log('[Write] SSE收到Agent消息: '+d.msg.agent_type);
+        }
+      }
+    } catch(ex) { console.error('[Write] SSE消息解析失败:',ex); }
+  });
+  sse.onerror = function() {
+    console.log('[Write] Agent SSE断线，3秒后重连...');
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(function() {
+      // EventSource会自动重连，这里做容错
+      console.log('[Write] SSE重连检查');
+    }, 3000);
+  };
+  // 保存引用供broadcast使用
+  window._writeSse = sse;
 })();
 </script>
 </body>

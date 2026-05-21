@@ -227,6 +227,135 @@ app.post('/api/writing-projects/:id/conversations', auth, (req, res) => {
     res.json({ id });
 });
 
+// ==================== Agent LLM 调用 ====================
+var ORCHESTRATOR_SYSTEM = '你是一个小说创作调配师，负责采访用户需求、协调下游写作智能体工作。\n\n'+
+'## 你的职责\n'+
+'1. 向用户询问以下信息（每次只问1-2个问题，不要一口气全问）：\n'+
+'   - 小说类型（玄幻/都市/科幻/仙侠/武侠/悬疑/言情/历史/同人...）和细分方向\n'+
+'   - 目标字数（短篇3万字 / 中篇20万字 / 长篇100万字+）\n'+
+'   - 是否有初步故事构思或灵感\n'+
+'   - 角色设想（主角、配角、反派等）\n'+
+'   - 风格参考（类似某某作家/某某作品/某某流派）\n'+
+'   - 目标读者平台（番茄/起点/晋江/纵横...）\n'+
+'2. 收集足够信息后，询问用户是否授权爬取近6个月同类热门小说作为参考\n'+
+'3. 整合所有信息生成一份清晰的创作需求摘要，请用户确认\n'+
+'4. 用户确认后，建议启动大纲Agent生成大纲\n\n'+
+'## 风格\n'+
+'- 像一个有经验的编辑/策划一样对话，不要过于机械\n'+
+'- 根据用户的回答灵活调整后续问题\n'+
+'- 适当给出来自网文市场的建议（如"目前XX类型在XX平台比较吃香"）\n'+
+'- 不要替用户做决定，始终征求确认\n\n'+
+'## 输出格式\n'+
+'- 以纯文本自然语言回复\n'+
+'- 当需要用户确认时，在末尾明确写出确认选项';
+
+app.post('/api/writing-projects/:id/llm-call', auth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const { content } = req.body;
+    if (!content) return res.status(400).json({ error:'缺少消息内容' });
+    console.log('[Write LLM] 项目='+projectId+' 用户输入长度='+content.length);
+
+    // 获取项目信息
+    const proj = queryOne('SELECT * FROM writing_projects WHERE id=? AND user_id=?', [projectId, req.userId]);
+    if (!proj) return res.status(404).json({ error:'项目不存在' });
+
+    // 获取或创建设置Agent配置
+    var agentConfig = queryOne('SELECT * FROM writing_agent_config WHERE project_id=? AND agent_type=?', [projectId, 'orchestrator']);
+    if (!agentConfig) {
+        dbRun('INSERT INTO writing_agent_config (project_id, agent_type, model_name) VALUES (?,?,?)', [projectId, 'orchestrator', 'deepseek-v4-pro']);
+        agentConfig = { model_name:'deepseek-v4-pro', temperature:null, api_endpoint:null, api_key:null };
+    }
+
+    // 获取历史对话（最近30条）
+    const history = queryAll('SELECT * FROM agent_conversations WHERE project_id=? ORDER BY created_at ASC LIMIT 500', [projectId]);
+    var recentMsgs = history.slice(-30);
+
+    // 保存用户消息
+    dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)', [projectId, 'user', 'user', content]);
+
+    // 构建消息
+    var msgs = [{ role:'system', content:ORCHESTRATOR_SYSTEM}];
+    recentMsgs.forEach(function(m) {
+        if (m.role==='user') msgs.push({ role:'user', content:m.content });
+        else if (m.role==='assistant') msgs.push({ role:'assistant', content:m.content });
+    });
+    msgs.push({ role:'user', content:content });
+
+    // 获取用户默认Agent（使用first available agent for LLM calls）
+    var llmAgent = queryOne('SELECT * FROM agents WHERE user_id=? ORDER BY id LIMIT 1', [req.userId]);
+    if (!llmAgent || !llmAgent.api_key) {
+        console.log('[Write LLM] 无可用智能体, 使用静默回退');
+        return res.json({ content:'⚠️ 请先在智能体管理页面配置至少一个AI模型，然后回到这里继续。', agent_type:'orchestrator' });
+    }
+
+    var endpoint = llmAgent.api_endpoint;
+    var key = llmAgent.api_key;
+    var model = agentConfig.model_name || llmAgent.model || 'deepseek-v4-pro';
+    var reqBody = { model:model, messages:msgs, temperature:0.7, stream:false };
+
+    console.log('[Write LLM] 调用 model='+model+' 消息数='+msgs.length+' endpoint='+endpoint.substring(0,40)+'...');
+
+    fetch(endpoint, {
+        method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
+        body:JSON.stringify(reqBody)
+    }).then(function(r){ return r.json(); }).then(function(d) {
+        var reply = (d.choices && d.choices[0] && d.choices[0].message) ? d.choices[0].message.content : '';
+        var thinking = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.reasoning_content) ? d.choices[0].message.reasoning_content : '';
+        if (!reply) { console.log('[Write LLM] 空响应'); reply='（模型未返回内容，请重试）'; }
+        var tokIn = (d.usage && d.usage.prompt_tokens)||0;
+        var tokOut = (d.usage && d.usage.completion_tokens)||0;
+        console.log('[Write LLM] 回复长度='+reply.length+' tokens in='+tokIn+' out='+tokOut);
+
+        // 保存助手回复
+        dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, thinking, token_used) VALUES (?,?,?,?,?,?)',
+            [projectId, 'orchestrator', 'assistant', reply, thinking||'', tokIn+tokOut]);
+        // 记录token消耗
+        dbRun('INSERT INTO token_usage_logs (user_id, project_id, agent_type, model, input_tokens, output_tokens) VALUES (?,?,?,?,?,?)',
+            [req.userId, projectId, 'orchestrator', model, tokIn, tokOut]);
+        saveDB();
+
+        res.json({ content:reply, thinking:thinking||'', token_in:tokIn, token_out:tokOut });
+    }).catch(function(err) {
+        console.error('[Write LLM] 调用失败:',err.message);
+        dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)', [projectId, 'orchestrator', 'assistant', '⚠️ 调用失败：'+err.message]);
+        saveDB();
+        res.status(500).json({ error:'LLM调用失败: '+err.message });
+    });
+});
+
+// ==================== 写作 SSE ====================
+var writeSseClients = {};  // projectId → Set<response>
+
+app.get('/api/write-sse', (req, res) => {
+    var t = req.query.token;
+    if (!t) return res.status(401).json({ error:'未登录' });
+    var d;
+    try { d = jwt.verify(t, JWT_SECRET); }
+    catch(e) { return res.status(401).json({ error:'登录过期' }); }
+    var projectId = parseInt(req.query.projectId);
+    if (!projectId) return res.status(400).json({ error:'缺少projectId' });
+
+    res.writeHead(200, { 'Content-Type':'text/event-stream', 'Cache-Control':'no-cache', 'Connection':'keep-alive' });
+    res.write('data: {"type":"connected","projectId":'+projectId+'}\n\n');
+
+    if (!writeSseClients[projectId]) writeSseClients[projectId] = new Set();
+    writeSseClients[projectId].add(res);
+
+    req.on('close', function() {
+        var s = writeSseClients[projectId];
+        if (s) { s.delete(res); if (s.size===0) delete writeSseClients[projectId]; }
+    });
+});
+
+function broadcastWriteEvent(projectId, data) {
+    var s = writeSseClients[projectId];
+    if (!s) return;
+    var json = JSON.stringify(data);
+    s.forEach(function(c) { try { c.write('data: '+json+'\n\n'); } catch(e) {} });
+    // 清理断连
+    s.forEach(function(c) { if (c.destroyed) s.delete(c); });
+}
+
 // ==================== 画布数据（按 projectId） ====================
 
 app.get('/api/canvas', auth, withProject, (req, res) => {
