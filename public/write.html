@@ -163,8 +163,15 @@ function autoSave() {
   saveTimer = setTimeout(function() {
     var ed = document.getElementById('editableContent');
     writingData.content = ed ? ed.innerHTML : '';
+    // 如果有活跃章节，保存章节内容
+    if (writingData.chapterId) {
+      var wc = (ed.textContent||'').replace(/\s/g,'').length;
+      api('PUT','/writing-projects/'+projectId+'/chapters/'+writingData.chapterId, { content_text:writingData.content, word_count:wc }).then(function() {
+        console.log('[Write] 章节自动保存 id='+writingData.chapterId+' 字数='+wc);
+      });
+    }
     api('PUT','/writing-projects/'+projectId, writingData).then(function() {
-      console.log('[Write] 自动保存完成');
+      console.log('[Write] 项目自动保存完成');
     });
   }, 1000);
 }
@@ -172,8 +179,8 @@ function autoSave() {
 // 内容变更监听
 var edDiv = document.getElementById('editableContent');
 edDiv.addEventListener('input', function() {
-  var wordCount = (edDiv.textContent||'').replace(/\s/g,'').length;
-  document.getElementById('wordCount').textContent = '字数: '+wordCount;
+  var wc = (edDiv.textContent||'').replace(/\s/g,'').length;
+  document.getElementById('wordCount').textContent = '字数: '+wc;
   autoSave();
 });
 
@@ -269,6 +276,142 @@ api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs) {
   }
   renderAgentMessages();
 });
+
+// ==================== 大纲树 ====================
+var volumes = [], chapters = [], activeChapterId = null;
+
+function loadOutline() {
+  console.log('[Write] 加载大纲树');
+  api('GET','/writing-projects/'+projectId+'/volumes').then(function(vols) {
+    volumes = vols || [];
+    api('GET','/writing-projects/'+projectId+'/chapters').then(function(chaps) {
+      chapters = chaps || [];
+      console.log('[Write] 大纲: '+volumes.length+'卷 '+chapters.length+'章');
+      renderOutlineTree();
+    });
+  });
+}
+
+function renderOutlineTree() {
+  var body = document.getElementById('treeBody');
+  var html = '';
+  volumes.forEach(function(v) {
+    var vChaps = chapters.filter(function(c){ return c.volume_id===v.id; });
+    html += '<div style="margin-bottom:8px;">';
+    html += '<div style="display:flex;align-items:center;padding:4px 6px;border-radius:4px;cursor:pointer;" onclick="toggleVolume(this)">';
+    html += '<span style="font-size:10px;margin-right:4px;">▶</span>';
+    html += '<span style="font-size:12px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+escHtml(v.title||'第'+v.volume_no+'卷')+'</span>';
+    html += '<button style="font-size:9px;padding:1px 4px;border-radius:3px;border:0.5px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;font-family:inherit;" onclick="event.stopPropagation();addChapter('+v.id+')" title="添加章">+章</button>';
+    html += '</div>';
+    html += '<div class="vol-chapters" style="padding-left:12px;">';
+    vChaps.forEach(function(c) {
+      var active = activeChapterId===c.id ? ' style="background:rgba(5,163,197,0.12);color:var(--accent);"' : '';
+      html += '<div'+active+' onclick="openChapter('+c.id+')" style="padding:3px 6px;border-radius:4px;cursor:pointer;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+escHtml(c.title||'第'+c.chapter_no+'章')+'</div>';
+    });
+    html += '</div></div>';
+  });
+  // 新建卷按钮
+  html += '<button onclick="addVolume()" style="width:100%;padding:6px;border-radius:6px;border:1px dashed var(--border);background:transparent;color:var(--text2);cursor:pointer;font-size:11px;font-family:inherit;margin-top:4px;">+ 新建卷</button>';
+  // 大纲生成按钮
+  html += '<button onclick="generateOutline()" id="btnGenOutline" style="width:100%;padding:6px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px;font-family:inherit;margin-top:4px;">🎬 生成大纲</button>';
+  body.innerHTML = html;
+}
+
+function toggleVolume(el) {
+  var arrow = el.querySelector('span');
+  var chaps = el.nextElementSibling;
+  if (chaps && chaps.classList.contains('vol-chapters')) {
+    var hidden = chaps.style.display==='none';
+    chaps.style.display = hidden ? 'block' : 'none';
+    arrow.textContent = hidden ? '▼' : '▶';
+  }
+}
+
+function addVolume() {
+  api('POST','/writing-projects/'+projectId+'/volumes', { title:'新卷' }).then(function(r) {
+    console.log('[Write] 新建卷 id='+(r&&r.id));
+    loadOutline();
+  });
+}
+
+function addChapter(volumeId) {
+  api('POST','/writing-projects/'+projectId+'/chapters', { volume_id:volumeId, title:'新章' }).then(function(r) {
+    console.log('[Write] 新建章 id='+(r&&r.id)+' vid='+volumeId);
+    loadOutline();
+  });
+}
+
+function openChapter(chapterId) {
+  console.log('[Write] 打开章 id='+chapterId);
+  activeChapterId = chapterId;
+  var ch = chapters.find(function(c){return c.id===chapterId;});
+  if (!ch) return;
+  document.getElementById('chapTitle').textContent = ch.title||'';
+  document.getElementById('editableContent').innerHTML = ch.content_text||'';
+  document.getElementById('editableContent').style.display = 'block';
+  document.getElementById('editorPlaceholder').style.display = 'none';
+  var wc = (ch.content_text||'').replace(/<[^>]*>/g,'').replace(/\s/g,'').length;
+  document.getElementById('wordCount').textContent = '字数: '+wc;
+  writingData.chapterId = chapterId;
+  renderOutlineTree();
+}
+
+function generateOutline() {
+  if (agentBusy) { console.log('[Write] Agent忙碌中，拒绝生成大纲'); return; }
+  console.log('[Write] 触发大纲生成');
+  agentBusy = true;
+  agentMsgs.push({ type:'system', content:'📋 大纲Agent 已启动，正在分析对话记录生成大纲...' });
+  agentMsgs.push({ type:'chat', role:'assistant', agent:'outliner', content:'⏳ 生成大纲中...', thinking:'' });
+  renderAgentMessages();
+  api('POST','/writing-projects/'+projectId+'/generate-outline').then(function(r) {
+    agentMsgs.pop();
+    if (r && r.content) {
+      // 尝试解析JSON大纲
+      var outlineJson = null;
+      try {
+        var clean = r.content.replace(/```json\s*|\s*```/g, '').trim();
+        outlineJson = JSON.parse(clean);
+      } catch(e) {
+        console.log('[Write] 大纲JSON解析失败，将原始文本存入对话');
+      }
+      if (outlineJson && outlineJson['卷']) {
+        // 自动创建卷和章
+        var created = 0;
+        outlineJson['卷'].forEach(function(vol, vi) {
+          api('POST','/writing-projects/'+projectId+'/volumes', { title:vol['卷名']||('第'+(vi+1)+'卷') }).then(function(vr) {
+            if (vr && vr.id) {
+              (vol['章']||[]).forEach(function(chap) {
+                api('POST','/writing-projects/'+projectId+'/chapters', { volume_id:vr.id, title:chap['章名']||'' });
+                created++;
+              });
+            }
+          });
+        });
+        agentMsgs.push({ type:'chat', role:'assistant', agent:'outliner', content:r.content.substring(0, 500)+(r.content.length>500?'\n...(已截断，完整内容已保存)':''), thinking:'' });
+        agentMsgs.push({ type:'system', content:'✅ 大纲已生成，'+outlineJson['卷'].length+'卷大纲已自动创建，请查看左侧大纲树' });
+        console.log('[Write] 大纲生成成功 volumes='+outlineJson['卷'].length);
+        setTimeout(function(){ loadOutline(); }, 1000);
+      } else {
+        agentMsgs.push({ type:'chat', role:'assistant', agent:'outliner', content:r.content, thinking:'' });
+        console.log('[Write] 大纲非JSON格式，显示原始文本');
+      }
+    } else {
+      agentMsgs.push({ type:'system', content:'⚠️ 大纲生成失败: '+(r&&r.error||'未知错误') });
+      console.error('[Write] 大纲生成失败:',r);
+    }
+    renderAgentMessages();
+    agentBusy = false;
+  }).catch(function(err) {
+    agentMsgs.pop();
+    agentMsgs.push({ type:'system', content:'⚠️ 大纲生成网络错误' });
+    console.error('[Write] 大纲生成异常:',err);
+    renderAgentMessages();
+    agentBusy = false;
+  });
+}
+
+// 初始化时加载大纲
+loadOutline();
 
 // ==================== SSE 实时通知 ====================
 // SSE-1: 互踢检测

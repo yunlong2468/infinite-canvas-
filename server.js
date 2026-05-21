@@ -323,6 +323,147 @@ app.post('/api/writing-projects/:id/llm-call', auth, (req, res) => {
     });
 });
 
+// ==================== 大纲Agent ====================
+var OUTLINER_SYSTEM = '你是小说大纲生成专家。根据用户提供的小说需求摘要，生成分卷分章大纲。\n\n'+
+'## 输出格式\n'+
+'请严格输出以下JSON格式（不要加任何解释文字）：\n'+
+'```json\n'+
+'{\n'+
+'  "总体大纲": "200字以内的小说总体剧情走向描述",\n'+
+'  "卷": [\n'+
+'    {\n'+
+'      "卷名": "第一卷：开端",\n'+
+'      "卷概要": "100字以内，本卷的主要剧情走向",\n'+
+'      "章": [\n'+
+'        { "章名": "第1章 山洞奇遇", "概要": "50字以内，本章核心剧情", "关键事件": ["事件1","事件2"], "涉及角色": ["主角","配角"] },\n'+
+'        { "章名": "第2章 初入宗门", "概要": "50字以内", "关键事件": [], "涉及角色": [] }\n'+
+'      ]\n'+
+'    }\n'+
+'  ]\n'+
+'}\n'+
+'```\n\n'+
+'## 要求\n'+
+'- 根据目标字数计算大概卷数和章数（每章约3000-5000字）\n'+
+'- 第一卷的前3章需要写得特别详细（吸引读者）\n'+
+'- 每个关键事件应该有推进剧情的作用\n'+
+'- 章名可以简洁但不能空洞';
+
+function callOutlineLLM(projectId, userId, systemPrompt, userContent, agentType, callback) {
+    var llmAgent = queryOne('SELECT * FROM agents WHERE user_id=? ORDER BY id LIMIT 1', [userId]);
+    if (!llmAgent || !llmAgent.api_key) { callback({ error:'请先在智能体管理页面配置至少一个AI模型' }); return; }
+    var agentConfig = queryOne('SELECT * FROM writing_agent_config WHERE project_id=? AND agent_type=?', [projectId, agentType]);
+    var model = (agentConfig && agentConfig.model_name) || llmAgent.model || 'deepseek-v4-pro';
+    var reqBody = { model:model, messages:[{ role:'system', content:systemPrompt },{ role:'user', content:userContent }], temperature:0.6, stream:false };
+    console.log('[Writing '+agentType+'] 调用 model='+model+' prompt长度='+userContent.length);
+    dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)', [projectId, agentType, 'user', userContent]);
+    fetch(llmAgent.api_endpoint, {
+        method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+llmAgent.api_key},
+        body:JSON.stringify(reqBody)
+    }).then(function(r){ return r.json(); }).then(function(d) {
+        var reply = (d.choices && d.choices[0] && d.choices[0].message) ? d.choices[0].message.content : '';
+        if (!reply) { console.log('[Writing '+agentType+'] 空响应'); callback({ error:'模型未返回内容' }); return; }
+        var tokIn = (d.usage && d.usage.prompt_tokens)||0, tokOut = (d.usage && d.usage.completion_tokens)||0;
+        console.log('[Writing '+agentType+'] 回复长度='+reply.length+' tokens in='+tokIn+' out='+tokOut);
+        dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, token_used) VALUES (?,?,?,?,?)', [projectId, agentType, 'assistant', reply, tokIn+tokOut]);
+        dbRun('INSERT INTO token_usage_logs (user_id, project_id, agent_type, model, input_tokens, output_tokens) VALUES (?,?,?,?,?,?)', [userId, projectId, agentType, model, tokIn, tokOut]);
+        saveDB();
+        callback({ content:reply, token_in:tokIn, token_out:tokOut });
+    }).catch(function(err) {
+        console.error('[Writing '+agentType+'] 调用失败:',err.message);
+        callback({ error:err.message });
+    });
+}
+
+app.post('/api/writing-projects/:id/generate-outline', auth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    var proj = queryOne('SELECT * FROM writing_projects WHERE id=? AND user_id=?', [projectId, req.userId]);
+    if (!proj) return res.status(404).json({ error:'项目不存在' });
+    console.log('[Writing 大纲] 项目='+projectId+' 开始生成大纲');
+
+    // 收集上下文：项目信息 + 最近对话
+    var context = '项目信息：\n';
+    context += '- 标题：'+proj.title+'\n';
+    context += '- 类型：'+(proj.genre||'未定')+' '+(proj.sub_genre||'')+'\n';
+    context += '- 目标字数：'+(proj.target_words||'未定')+'\n';
+    context += '- 风格参考：'+(proj.style_ref||'无')+'\n\n';
+
+    var history = queryAll('SELECT * FROM agent_conversations WHERE project_id=? ORDER BY created_at ASC LIMIT 200', [projectId]);
+    context += '用户与主Agent对话记录：\n';
+    history.forEach(function(m) {
+        if (m.role==='user') context += '用户：'+m.content+'\n';
+        else if (m.role==='assistant' && m.agent_type==='orchestrator') context += '主Agent：'+m.content+'\n';
+    });
+    context += '\n请根据以上信息生成完整的小说大纲（分卷分章）。';
+
+    callOutlineLLM(projectId, req.userId, OUTLINER_SYSTEM, context, 'outliner', function(result) {
+        if (result.error) return res.status(500).json({ error:result.error });
+        res.json(result);
+    });
+});
+
+// ==================== 卷/章 CRUD ====================
+app.get('/api/writing-projects/:id/volumes', auth, (req, res) => {
+    const vols = queryAll('SELECT * FROM writing_volumes WHERE project_id=? ORDER BY sort_order', [req.params.id]);
+    res.json(vols);
+});
+app.post('/api/writing-projects/:id/volumes', auth, (req, res) => {
+    const { title } = req.body;
+    const projectId = parseInt(req.params.id);
+    const maxV = queryOne('SELECT MAX(volume_no) as mx FROM writing_volumes WHERE project_id=?', [projectId]);
+    const vno = (maxV && maxV.mx ? maxV.mx+1 : 1);
+    const id = dbRun('INSERT INTO writing_volumes (project_id, volume_no, title, sort_order) VALUES (?,?,?,?)', [projectId, vno, title||('第'+vno+'卷'), vno]);
+    saveDB();
+    console.log('[Writing] 新建卷 id='+id+' no='+vno+' title='+(title||'第'+vno+'卷'));
+    res.json({ id, volume_no:vno, title:title||'第'+vno+'卷' });
+});
+app.put('/api/writing-projects/:id/volumes/:vid', auth, (req, res) => {
+    const { title, summary, status } = req.body;
+    var sets=[], params=[];
+    if (title!==undefined){sets.push('title=?');params.push(title);}
+    if (summary!==undefined){sets.push('summary=?');params.push(summary);}
+    if (status!==undefined){sets.push('status=?');params.push(status);}
+    if (sets.length){params.push(req.params.vid);dbRun('UPDATE writing_volumes SET '+sets.join(',')+' WHERE id=?',params);saveDB();}
+    res.json({ ok:true });
+});
+app.delete('/api/writing-projects/:id/volumes/:vid', auth, (req, res) => {
+    dbRun('DELETE FROM writing_chapters WHERE volume_id=?', [req.params.vid]);
+    dbRun('DELETE FROM writing_volumes WHERE id=?', [req.params.vid]);
+    saveDB();
+    console.log('[Writing] 删除卷 id='+req.params.vid);
+    res.json({ ok:true });
+});
+
+app.get('/api/writing-projects/:id/chapters', auth, (req, res) => {
+    const chapters = queryAll('SELECT * FROM writing_chapters WHERE project_id=? ORDER BY chapter_no', [req.params.id]);
+    res.json(chapters);
+});
+app.post('/api/writing-projects/:id/chapters', auth, (req, res) => {
+    const { title, volume_id } = req.body;
+    const projectId = parseInt(req.params.id);
+    const maxC = queryOne('SELECT MAX(chapter_no) as mx FROM writing_chapters WHERE project_id=?', [projectId]);
+    const cno = (maxC && maxC.mx ? maxC.mx+1 : 1);
+    const id = dbRun('INSERT INTO writing_chapters (project_id, volume_id, chapter_no, title) VALUES (?,?,?,?)', [projectId, volume_id||null, cno, title||('第'+cno+'章')]);
+    saveDB();
+    console.log('[Writing] 新建章 id='+id+' no='+cno+' title='+(title||''));
+    res.json({ id, chapter_no:cno, title:title||'第'+cno+'章' });
+});
+app.put('/api/writing-projects/:id/chapters/:cid', auth, (req, res) => {
+    const { title, content_text, word_count, status } = req.body;
+    var sets=[], params=[];
+    if (title!==undefined){sets.push('title=?');params.push(title);}
+    if (content_text!==undefined){sets.push('content_text=?');params.push(content_text);}
+    if (word_count!==undefined){sets.push('word_count=?');params.push(word_count);}
+    if (status!==undefined){sets.push('status=?');params.push(status);}
+    if (sets.length){sets.push('updated_at=CURRENT_TIMESTAMP');params.push(req.params.cid);dbRun('UPDATE writing_chapters SET '+sets.join(',')+' WHERE id=?',params);saveDB();}
+    res.json({ ok:true });
+});
+app.delete('/api/writing-projects/:id/chapters/:cid', auth, (req, res) => {
+    dbRun('DELETE FROM writing_chapters WHERE id=?', [req.params.cid]);
+    saveDB();
+    console.log('[Writing] 删除章 id='+req.params.cid);
+    res.json({ ok:true });
+});
+
 // ==================== 写作 SSE ====================
 var writeSseClients = {};  // projectId → Set<response>
 
@@ -999,6 +1140,8 @@ async function start() {
 
     // ==================== 写作模块表 ====================
     db.run('CREATE TABLE IF NOT EXISTS writing_projects (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT DEFAULT \'未命名写作\', genre TEXT DEFAULT \'\', sub_genre TEXT DEFAULT \'\', target_words INTEGER DEFAULT 0, style_ref TEXT DEFAULT \'\', status TEXT DEFAULT \'drafting\', branch_active TEXT DEFAULT \'main\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS writing_volumes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, volume_no INTEGER DEFAULT 1, title TEXT DEFAULT \'\', summary TEXT DEFAULT \'\', status TEXT DEFAULT \'draft\', sort_order REAL DEFAULT 0)');
+    db.run('CREATE TABLE IF NOT EXISTS writing_chapters (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, volume_id INTEGER, chapter_no INTEGER DEFAULT 1, title TEXT DEFAULT \'\', content_text TEXT DEFAULT \'\', word_count INTEGER DEFAULT 0, status TEXT DEFAULT \'draft\', branch_name TEXT DEFAULT \'main\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_agent_config (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, agent_type TEXT NOT NULL, model_name TEXT, temperature REAL, api_endpoint TEXT, api_key TEXT, system_prompt TEXT, max_tokens INTEGER, is_muted INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(project_id, agent_type))');
     db.run('CREATE TABLE IF NOT EXISTS agent_conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, agent_type TEXT NOT NULL, role TEXT NOT NULL, content TEXT DEFAULT \'\', thinking TEXT DEFAULT \'\', tool_calls TEXT DEFAULT \'\', metadata TEXT DEFAULT \'{"type":"chat"}\', token_used INTEGER DEFAULT 0, status TEXT DEFAULT \'done\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS token_usage_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, agent_type TEXT, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cost_input REAL DEFAULT 0.0, cost_output REAL DEFAULT 0.0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
