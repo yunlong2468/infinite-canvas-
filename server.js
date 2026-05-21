@@ -323,6 +323,80 @@ app.post('/api/writing-projects/:id/llm-call', auth, (req, res) => {
     });
 });
 
+// ==================== 角色/场景/道具 CRUD ====================
+app.get('/api/writing-projects/:id/characters', auth, (req, res) => {
+    const chars = queryAll('SELECT * FROM writing_characters WHERE project_id=? ORDER BY id', [req.params.id]);
+    res.json(chars);
+});
+app.post('/api/writing-projects/:id/characters', auth, (req, res) => {
+    const { name, profile_json } = req.body;
+    if (!name) return res.status(400).json({ error:'缺少角色名' });
+    const id = dbRun('INSERT INTO writing_characters (project_id, name, profile_json) VALUES (?,?,?)', [req.params.id, name, profile_json||'{}']);
+    saveDB();
+    console.log('[Writing] 新建角色 id='+id+' name='+name);
+    res.json({ id, name });
+});
+app.put('/api/writing-projects/:id/characters/:cid', auth, (req, res) => {
+    const { name, aliases, profile_json, canvas_node_ids, avatar_url, status } = req.body;
+    var sets=[], params=[];
+    if (name!==undefined){sets.push('name=?');params.push(name);}
+    if (aliases!==undefined){sets.push('aliases=?');params.push(aliases);}
+    if (profile_json!==undefined){sets.push('profile_json=?');params.push(profile_json);}
+    if (canvas_node_ids!==undefined){sets.push('canvas_node_ids=?');params.push(canvas_node_ids);}
+    if (avatar_url!==undefined){sets.push('avatar_url=?');params.push(avatar_url);}
+    if (status!==undefined){sets.push('status=?');params.push(status);}
+    if (sets.length){sets.push('updated_at=CURRENT_TIMESTAMP');params.push(req.params.cid);dbRun('UPDATE writing_characters SET '+sets.join(',')+' WHERE id=?',params);saveDB();}
+    res.json({ ok:true });
+});
+app.delete('/api/writing-projects/:id/characters/:cid', auth, (req, res) => {
+    dbRun('DELETE FROM writing_characters WHERE id=?', [req.params.cid]);
+    saveDB();
+    res.json({ ok:true });
+});
+
+// ==================== 角色Agent ====================
+var CHARACTER_SYSTEM = '你是小说角色设计专家。根据用户提供的小说信息和大纲，设计角色档案。\n\n'+
+'## 输出格式\n'+
+'请输出以下JSON：\n'+
+'```json\n'+
+'{\n'+
+'  "角色": [{\n'+
+'    "姓名":"主角名",\n'+
+'    "别名":"称号/道号",\n'+
+'    "性别":"男/女",\n'+
+'    "年龄":"外表年龄/实际年龄",\n'+
+'    "外貌":"详细外貌描写，100-200字",\n'+
+'    "性格":"性格特征描述",\n'+
+'    "背景":"身世和成长经历",\n'+
+'    "能力":"功法/能力/特长",\n'+
+'    "命运弧线":"角色在故事中的成长轨迹和结局走向",\n'+
+'    "对白风格":"说话方式、口头禅、语言特点",\n'+
+'    "关系网":"与其他角色的关系列表"\n'+
+'  }]\n'+
+'}\n'+
+'```\n\n'+
+'## 要求\n'+
+'- 至少设计主角和相关重要配角\n'+
+'- 外貌描写要具体可画\n'+
+'- 命运弧线要涵盖从开篇到结局的完整变化';
+
+app.post('/api/writing-projects/:id/generate-characters', auth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    var proj = queryOne('SELECT * FROM writing_projects WHERE id=? AND user_id=?', [projectId, req.userId]);
+    if (!proj) return res.status(404).json({ error:'项目不存在' });
+    console.log('[Writing 角色] 项目='+projectId+' 开始生成角色');
+    var context = '项目：'+proj.title+'\n类型：'+proj.genre+' '+proj.sub_genre+'\n';
+    var history = queryAll('SELECT * FROM agent_conversations WHERE project_id=? ORDER BY created_at ASC LIMIT 200', [projectId]);
+    history.forEach(function(m) {
+        if (m.role==='user') context += '用户：'+m.content+'\n';
+        else if (m.role==='assistant') context += 'Agent：'+m.content+'\n';
+    });
+    callOutlineLLM(projectId, req.userId, CHARACTER_SYSTEM, context, 'character', function(result) {
+        if (result.error) return res.status(500).json({ error:result.error });
+        res.json(result);
+    });
+});
+
 // ==================== 大纲Agent ====================
 var OUTLINER_SYSTEM = '你是小说大纲生成专家。根据用户提供的小说需求摘要，生成分卷分章大纲。\n\n'+
 '## 输出格式\n'+
@@ -456,6 +530,17 @@ app.put('/api/writing-projects/:id/chapters/:cid', auth, (req, res) => {
     if (status!==undefined){sets.push('status=?');params.push(status);}
     if (sets.length){sets.push('updated_at=CURRENT_TIMESTAMP');params.push(req.params.cid);dbRun('UPDATE writing_chapters SET '+sets.join(',')+' WHERE id=?',params);saveDB();}
     res.json({ ok:true });
+});
+app.get('/api/writing-projects/:id/token-stats', auth, (req, res) => {
+    var today = new Date().toISOString().substring(0,10);
+    var todayTokens = queryOne('SELECT SUM(input_tokens+output_tokens) as total FROM token_usage_logs WHERE project_id=? AND created_at>=?', [req.params.id, today]);
+    var pricing = queryOne('SELECT * FROM token_pricing_config WHERE (user_id=? OR user_id IS NULL) AND is_default=1 LIMIT 1', [req.userId]);
+    var model = pricing ? pricing.model_name : '';
+    var inpPrice = pricing ? pricing.input_price_per_million * (pricing.discount_rate||1) : 0;
+    var outPrice = pricing ? pricing.output_price_per_million * (pricing.discount_rate||1) : 0;
+    var todayCount = (todayTokens && todayTokens.total) || 0;
+    var cost = (todayCount/1000000) * ((inpPrice+outPrice)/2);
+    res.json({ today:todayCount, model:model, cost:cost, inputPrice:inpPrice, outputPrice:outPrice });
 });
 app.delete('/api/writing-projects/:id/chapters/:cid', auth, (req, res) => {
     dbRun('DELETE FROM writing_chapters WHERE id=?', [req.params.cid]);
@@ -1142,6 +1227,9 @@ async function start() {
     db.run('CREATE TABLE IF NOT EXISTS writing_projects (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT DEFAULT \'未命名写作\', genre TEXT DEFAULT \'\', sub_genre TEXT DEFAULT \'\', target_words INTEGER DEFAULT 0, style_ref TEXT DEFAULT \'\', status TEXT DEFAULT \'drafting\', branch_active TEXT DEFAULT \'main\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_volumes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, volume_no INTEGER DEFAULT 1, title TEXT DEFAULT \'\', summary TEXT DEFAULT \'\', status TEXT DEFAULT \'draft\', sort_order REAL DEFAULT 0)');
     db.run('CREATE TABLE IF NOT EXISTS writing_chapters (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, volume_id INTEGER, chapter_no INTEGER DEFAULT 1, title TEXT DEFAULT \'\', content_text TEXT DEFAULT \'\', word_count INTEGER DEFAULT 0, status TEXT DEFAULT \'draft\', branch_name TEXT DEFAULT \'main\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS writing_characters (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, aliases TEXT DEFAULT \'\', profile_json TEXT DEFAULT \'{}\', canvas_node_ids TEXT DEFAULT \'[]\', avatar_url TEXT DEFAULT \'\', status TEXT DEFAULT \'active\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS writing_scenes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT \'\', atmosphere TEXT DEFAULT \'\', canvas_node_ids TEXT DEFAULT \'[]\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS writing_props (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT \'\', canvas_node_ids TEXT DEFAULT \'[]\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_agent_config (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, agent_type TEXT NOT NULL, model_name TEXT, temperature REAL, api_endpoint TEXT, api_key TEXT, system_prompt TEXT, max_tokens INTEGER, is_muted INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(project_id, agent_type))');
     db.run('CREATE TABLE IF NOT EXISTS agent_conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, agent_type TEXT NOT NULL, role TEXT NOT NULL, content TEXT DEFAULT \'\', thinking TEXT DEFAULT \'\', tool_calls TEXT DEFAULT \'\', metadata TEXT DEFAULT \'{"type":"chat"}\', token_used INTEGER DEFAULT 0, status TEXT DEFAULT \'done\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS token_usage_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, agent_type TEXT, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cost_input REAL DEFAULT 0.0, cost_output REAL DEFAULT 0.0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
