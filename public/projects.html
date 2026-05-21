@@ -304,7 +304,10 @@ function logout() {
   });
 }
 
-loadProjects();
+// 根据URL参数自动切换模式
+var urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('mode') === 'writing') switchMode('writing');
+else loadProjects();
 
 // SSE 实时通知（互踢检测）
 (function() {
