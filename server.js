@@ -142,23 +142,25 @@ app.get('/api/projects', auth, (req, res) => {
     res.json(projects);
 });
 
-// 创建项目
+// 自动命名：baseName 或 baseName (N)，自动填充最小缺失数字
+function generateAutoName(userId, table, column, baseName) {
+    var rows = queryAll('SELECT '+column+' AS n FROM '+table+' WHERE user_id=?', [userId]);
+    var used = {};
+    var regex = new RegExp('^'+baseName.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&')+'\\s*\\((\\d+)\\)$');
+    rows.forEach(function(r) {
+        if (r.n === baseName) { used[1] = true; return; }
+        var m = r.n.match(regex);
+        if (m) { used[parseInt(m[1])] = true; }
+    });
+    var num = 1;
+    while (used[num]) num++;
+    return num === 1 ? baseName : baseName + ' (' + num + ')';
+}
+
+// 创建画布项目
 app.post('/api/projects', auth, (req, res) => {
-    let name = (req.body.name || '').trim();
-    if (!name) {
-        // 自动命名：检查是否已有"新建项目"
-        const existing = queryOne('SELECT COUNT(*) AS cnt FROM projects WHERE user_id = ? AND name = ?', [req.userId, '新建项目']);
-        if (existing && existing.cnt > 0) {
-            const now = new Date();
-            name = '新建项目 ' + now.getFullYear() + '-' +
-                String(now.getMonth() + 1).padStart(2, '0') + '-' +
-                String(now.getDate()).padStart(2, '0') + ' ' +
-                String(now.getHours()).padStart(2, '0') + ':' +
-                String(now.getMinutes()).padStart(2, '0');
-        } else {
-            name = '新建项目';
-        }
-    }
+    var name = (req.body.name || '').trim();
+    if (!name) name = generateAutoName(req.userId, 'projects', 'name', '新建项目');
     const id = dbRun('INSERT INTO projects (user_id, name, data) VALUES (?, ?, ?)', [req.userId, name, '{"notes":[],"mediaNodes":[],"connections":[]}']);
     res.json({ id, name });
 });
@@ -187,11 +189,12 @@ app.get('/api/writing-projects', auth, (req, res) => {
     res.json(projects);
 });
 app.post('/api/writing-projects', auth, (req, res) => {
-    const { title } = req.body;
-    const id = dbRun('INSERT INTO writing_projects (user_id, title) VALUES (?,?)', [req.userId, title||'未命名写作']);
-    // 创建默认主Agent配置
+    var title = (req.body.title || '').trim();
+    if (!title) title = generateAutoName(req.userId, 'writing_projects', 'title', '未命名写作');
+    const id = dbRun('INSERT INTO writing_projects (user_id, title) VALUES (?,?)', [req.userId, title]);
     dbRun('INSERT OR IGNORE INTO writing_agent_config (project_id, agent_type, model_name) VALUES (?,?,?)', [id, 'orchestrator', 'deepseek-v4-pro']);
     saveDB();
+    console.log('[Writing] 创建项目 id='+id+' title='+title);
     res.json({ id, title });
 });
 app.put('/api/writing-projects/:id', auth, (req, res) => {
