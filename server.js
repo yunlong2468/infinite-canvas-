@@ -323,6 +323,79 @@ app.post('/api/writing-projects/:id/llm-call', auth, (req, res) => {
     });
 });
 
+// ==================== 对话Agent ====================
+var DIALOG_SYSTEM = '你是小说对白专家，负责模拟角色之间的对话。\n\n'+
+'## 要求\n'+
+'- 根据提供的角色档案，模拟角色之间的自然对话\n'+
+'- 保持角色性格一致性（说话方式、口头禅、性格特征）\n'+
+'- 考虑角色之间的关系状态（友好/敌对/爱慕等）\n'+
+'- 输出纯对话文本，格式为：角色名：对话内容\n'+
+'- 可以在括号内添加简短的动作/表情描述，如（冷笑）（握紧拳头）\n'+
+'- 对话要推动剧情，不要空洞寒暄';
+
+app.post('/api/writing-projects/:id/generate-dialog', auth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const { character_ids, scene_context } = req.body;
+    console.log('[Writing 对话] 项目='+projectId+' chars='+JSON.stringify(character_ids));
+    var context = '场景：'+(scene_context||'未知')+'\n';
+    if (character_ids && character_ids.length) {
+        character_ids.forEach(function(cid) {
+            var c = queryOne('SELECT * FROM writing_characters WHERE id=?', [cid]);
+            if (c) { context += '角色档案：\n'+c.profile_json+'\n'; }
+        });
+    }
+    callOutlineLLM(projectId, req.userId, DIALOG_SYSTEM, context, 'dialog', function(result) {
+        if (result.error) return res.status(500).json({ error:result.error });
+        res.json(result);
+    });
+});
+
+// ==================== 关系/时间线/伏笔 CRUD ====================
+app.get('/api/writing-projects/:id/relationships', auth, (req, res) => {
+    res.json(queryAll('SELECT * FROM relationship_edges WHERE project_id=?', [req.params.id]));
+});
+app.post('/api/writing-projects/:id/relationships', auth, (req, res) => {
+    var { from_character_id, to_character_id, relation_type, description, intensity } = req.body;
+    var id = dbRun('INSERT INTO relationship_edges (project_id, from_character_id, to_character_id, relation_type, description, intensity) VALUES (?,?,?,?,?,?)', [req.params.id, from_character_id, to_character_id, relation_type||'custom', description||'', intensity||5]);
+    saveDB();
+    res.json({ id });
+});
+app.delete('/api/writing-projects/:id/relationships/:rid', auth, (req, res) => {
+    dbRun('DELETE FROM relationship_edges WHERE id=?', [req.params.rid]);
+    saveDB();
+    res.json({ ok:true });
+});
+
+app.get('/api/writing-projects/:id/timeline', auth, (req, res) => {
+    res.json(queryAll('SELECT * FROM plot_timeline_events WHERE project_id=? ORDER BY order_index', [req.params.id]));
+});
+app.post('/api/writing-projects/:id/timeline', auth, (req, res) => {
+    var { event_name, summary, character_ids, chapter_id, order_index, event_type } = req.body;
+    var id = dbRun('INSERT INTO plot_timeline_events (project_id, event_name, summary, character_ids, chapter_id, order_index, event_type) VALUES (?,?,?,?,?,?,?)', [req.params.id, event_name, summary||'', JSON.stringify(character_ids||[]), chapter_id||null, order_index||0, event_type||'minor']);
+    saveDB();
+    res.json({ id });
+});
+
+app.get('/api/writing-projects/:id/foreshadowing', auth, (req, res) => {
+    res.json(queryAll('SELECT * FROM foreshadowing WHERE project_id=? ORDER BY created_at DESC', [req.params.id]));
+});
+app.post('/api/writing-projects/:id/foreshadowing', auth, (req, res) => {
+    var { name, description, status, plant_chapter_id } = req.body;
+    var id = dbRun('INSERT INTO foreshadowing (project_id, name, description, status, plant_chapter_id) VALUES (?,?,?,?,?)', [req.params.id, name, description||'', status||'planted', plant_chapter_id||null]);
+    saveDB();
+    res.json({ id });
+});
+app.put('/api/writing-projects/:id/foreshadowing/:fid', auth, (req, res) => {
+    var { status, resolve_chapter_id, notes } = req.body;
+    var sets=[], params=[];
+    if (status) { sets.push('status=?'); params.push(status); }
+    if (resolve_chapter_id) { sets.push('resolve_chapter_id=?'); params.push(resolve_chapter_id); }
+    if (notes) { sets.push('notes=?'); params.push(notes); }
+    if (status==='resolved') { sets.push('resolved_at=?'); params.push(new Date().toISOString()); }
+    if (sets.length) { params.push(req.params.fid); dbRun('UPDATE foreshadowing SET '+sets.join(',')+' WHERE id=?', params); saveDB(); }
+    res.json({ ok:true });
+});
+
 // ==================== 角色/场景/道具 CRUD ====================
 app.get('/api/writing-projects/:id/characters', auth, (req, res) => {
     const chars = queryAll('SELECT * FROM writing_characters WHERE project_id=? ORDER BY id', [req.params.id]);
@@ -1230,6 +1303,66 @@ async function start() {
     db.run('CREATE TABLE IF NOT EXISTS writing_characters (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, aliases TEXT DEFAULT \'\', profile_json TEXT DEFAULT \'{}\', canvas_node_ids TEXT DEFAULT \'[]\', avatar_url TEXT DEFAULT \'\', status TEXT DEFAULT \'active\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_scenes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT \'\', atmosphere TEXT DEFAULT \'\', canvas_node_ids TEXT DEFAULT \'[]\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_props (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT \'\', canvas_node_ids TEXT DEFAULT \'[]\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS character_memories (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, character_id INTEGER, memory_type TEXT DEFAULT \'base_profile\', content TEXT DEFAULT \'\', importance INTEGER DEFAULT 3, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, expires_at TEXT)');
+    db.run('CREATE TABLE IF NOT EXISTS relationship_edges (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, from_character_id INTEGER, to_character_id INTEGER, relation_type TEXT DEFAULT \'custom\', description TEXT DEFAULT \'\', intensity INTEGER DEFAULT 5, status TEXT DEFAULT \'active\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS plot_timeline_events (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_name TEXT NOT NULL, summary TEXT DEFAULT \'\', character_ids TEXT DEFAULT \'[]\', chapter_id INTEGER, order_index REAL DEFAULT 0, branch_name TEXT DEFAULT \'main\', event_type TEXT DEFAULT \'minor\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS foreshadowing (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT \'\', status TEXT DEFAULT \'planted\', plant_chapter_id INTEGER, resolve_chapter_id INTEGER, notes TEXT DEFAULT \'\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT)');
+    db.run('CREATE TABLE IF NOT EXISTS writing_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, branch_name TEXT DEFAULT \'main\', parent_version_id INTEGER, snapshot_json TEXT NOT NULL, message TEXT DEFAULT \'\', commit_type TEXT DEFAULT \'manual\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS writing_merge_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, source_branch TEXT, target_branch TEXT, conflicts_json TEXT DEFAULT \'[]\', resolution_json TEXT DEFAULT \'{}\', status TEXT DEFAULT \'pending\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT)');
+
+// ==================== 版本管理 ====================
+app.get('/api/writing-projects/:id/versions', auth, (req, res) => {
+    var branch = req.query.branch || 'main';
+    var versions = queryAll('SELECT * FROM writing_versions WHERE project_id=? AND branch_name=? ORDER BY created_at DESC LIMIT 50', [req.params.id, branch]);
+    res.json(versions);
+});
+
+app.post('/api/writing-projects/:id/snapshot', auth, (req, res) => {
+    var { message, branch } = req.body;
+    var projectId = parseInt(req.params.id);
+    // 收集当前所有数据
+    var proj = queryOne('SELECT * FROM writing_projects WHERE id=?', [projectId]);
+    var vols = queryAll('SELECT * FROM writing_volumes WHERE project_id=?', [projectId]);
+    var chaps = queryAll('SELECT * FROM writing_chapters WHERE project_id=?', [projectId]);
+    var chars = queryAll('SELECT * FROM writing_characters WHERE project_id=?', [projectId]);
+    var rels = queryAll('SELECT * FROM relationship_edges WHERE project_id=?', [projectId]);
+    var timeline = queryAll('SELECT * FROM plot_timeline_events WHERE project_id=?', [projectId]);
+    var fores = queryAll('SELECT * FROM foreshadowing WHERE project_id=?', [projectId]);
+    var snapshot = JSON.stringify({ project:proj, volumes:vols, chapters:chaps, characters:chars, relationships:rels, timeline:timeline, foreshadowing:fores });
+    var id = dbRun('INSERT INTO writing_versions (project_id, branch_name, snapshot_json, message, commit_type) VALUES (?,?,?,?,?)',
+        [projectId, branch||'main', snapshot, message||'版本快照', 'manual']);
+    saveDB();
+    console.log('[Writing 版本] 快照 id='+id+' branch='+(branch||'main')+' msg='+(message||''));
+    res.json({ id, branch:branch||'main' });
+});
+
+app.post('/api/writing-projects/:id/branches', auth, (req, res) => {
+    var { branch_name } = req.body;
+    if (!branch_name) return res.status(400).json({ error:'缺少分支名' });
+    var projectId = parseInt(req.params.id);
+    // 先保存当前快照
+    var proj = queryOne('SELECT * FROM writing_projects WHERE id=?', [projectId]);
+    if (!proj) return res.status(404).json({ error:'项目不存在' });
+    var vols = queryAll('SELECT * FROM writing_volumes WHERE project_id=?', [projectId]);
+    var chaps = queryAll('SELECT * FROM writing_chapters WHERE project_id=?', [projectId]);
+    var snapshot = JSON.stringify({ project:proj, volumes:vols, chapters:chaps });
+    var id = dbRun('INSERT INTO writing_versions (project_id, branch_name, snapshot_json, message, commit_type) VALUES (?,?,?,?,?)',
+        [projectId, branch_name, snapshot, '创建分支 '+branch_name, 'manual']);
+    dbRun('UPDATE writing_projects SET branch_active=? WHERE id=?', [branch_name, projectId]);
+    saveDB();
+    console.log('[Writing 分支] 创建 '+branch_name+' id='+id);
+    res.json({ id, branch:branch_name });
+});
+
+app.post('/api/writing-projects/:id/switch-branch', auth, (req, res) => {
+    var { branch_name } = req.body;
+    if (!branch_name) return res.status(400).json({ error:'缺少分支名' });
+    var projectId = parseInt(req.params.id);
+    dbRun('UPDATE writing_projects SET branch_active=? WHERE id=?', [branch_name, projectId]);
+    saveDB();
+    console.log('[Writing 分支] 切换到 '+branch_name);
+    res.json({ ok:true, branch:branch_name });
+});
     db.run('CREATE TABLE IF NOT EXISTS writing_agent_config (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, agent_type TEXT NOT NULL, model_name TEXT, temperature REAL, api_endpoint TEXT, api_key TEXT, system_prompt TEXT, max_tokens INTEGER, is_muted INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(project_id, agent_type))');
     db.run('CREATE TABLE IF NOT EXISTS agent_conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, agent_type TEXT NOT NULL, role TEXT NOT NULL, content TEXT DEFAULT \'\', thinking TEXT DEFAULT \'\', tool_calls TEXT DEFAULT \'\', metadata TEXT DEFAULT \'{"type":"chat"}\', token_used INTEGER DEFAULT 0, status TEXT DEFAULT \'done\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS token_usage_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, agent_type TEXT, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cost_input REAL DEFAULT 0.0, cost_output REAL DEFAULT 0.0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
