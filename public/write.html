@@ -64,7 +64,6 @@ body { background:var(--bg); color:var(--text); font-family:'Inter','Segoe UI','
 .msg .bubble { padding:8px 12px; border-radius:10px; font-size:12px; line-height:1.55; word-break:break-word; max-width:calc(100% - 40px); overflow-wrap:break-word; }
 .msg.system-msg { justify-content:center; }
 .msg.system-msg .sys-text { font-size:10px; color:var(--text2); background:rgba(255,255,255,0.03); padding:2px 8px; border-radius:10px; max-width:280px; text-align:center; }
-.msg.user-msg { flex-direction:row-reverse; }
 .msg.user-msg .bubble { background:var(--accent); color:#fff; }
 .msg.agent-msg .bubble { background:rgba(255,255,255,0.06); }
 .msg.agent-msg .avatar { background:rgba(5,163,197,0.15); }
@@ -240,7 +239,7 @@ function renderAgentMessages() {
     if (m.type === 'system') {
       html += '<div class="msg system-msg"><span class="sys-text">'+escHtml(m.content)+'</span></div>';
     } else if (m.role === 'user') {
-      html += '<div class="msg user-msg"><div class="bubble">'+escHtml(m.content)+'</div><div class="avatar">👤</div></div>';
+      html += '<div class="msg user-msg"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+'</div></div>';
     } else {
       var avatar = m.agent==='orchestrator'?'🎭':m.agent==='outliner'?'📋':m.agent==='character'?'👥':m.agent==='crawler'?'🕷️':m.agent==='dialog'?'💬':m.agent==='reviewer'?'🔍':m.agent==='skill_optimizer'?'🧠':'🤖';
       html += '<div class="msg agent-msg"><div class="avatar" style="font-size:16px;">'+avatar+'</div><div class="bubble">';
@@ -253,7 +252,8 @@ function renderAgentMessages() {
     }
   });
   container.innerHTML = html;
-  container.scrollTop = container.scrollHeight;
+  // 强制滚动到底部（最新消息在底部）
+  setTimeout(function(){ container.scrollTop = container.scrollHeight; }, 50);
 }
 
 var agentBusy = false;
