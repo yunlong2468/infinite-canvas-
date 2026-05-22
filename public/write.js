@@ -1229,15 +1229,31 @@ function editUserMsg(msgIdx) {
   var menu = document.getElementById('userCtxMenu');
   menu.classList.remove('show');
   if (msgIdx < 0 || msgIdx >= agentMsgs.length) return;
-  var oldText = agentMsgs[msgIdx].content || '';
-  showPrompt('编辑已发送的消息:', oldText, function(newText) {
-    if (!newText || !newText.trim()) return;
-    if (newText.trim() === oldText.trim()) return;
-    if (!confirm('编辑后将替换此消息并删除后续AI回复，确定继续？')) return;
-    // 更新消息内容
-    agentMsgs[msgIdx].content = newText.trim();
+  var msg = agentMsgs[msgIdx];
+  // 找到对应的气泡 DOM
+  var bubble = document.querySelector('.msg.user-msg[data-msg-idx="'+msgIdx+'"] .bubble');
+  if (!bubble) return;
+  var oldHTML = bubble.innerHTML;
+  var oldText = msg.content || '';
+  // 替换为内联编辑区
+  bubble.innerHTML = '<textarea id="edInlineTa" style="width:100%;min-height:40px;padding:6px 8px;background:rgba(0,0,0,0.2);border:1px solid var(--accent);border-radius:6px;color:var(--text);font-size:13px;font-family:inherit;outline:none;resize:vertical;line-height:1.55;">'+escHtml(oldText)+'</textarea>'
+    +'<div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end;">'
+    +'<button style="padding:3px 12px;border-radius:4px;border:0.5px solid var(--border);background:rgba(255,255,255,0.06);color:var(--text2);cursor:pointer;font-size:11px;font-family:inherit;" id="edInlineCancel">取消</button>'
+    +'<button style="padding:3px 12px;border-radius:4px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px;font-family:inherit;" id="edInlineConfirm">✓ 确认</button>'
+    +'</div>';
+  var ta = document.getElementById('edInlineTa');
+  ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  // 取消
+  document.getElementById('edInlineCancel').addEventListener('click', function() {
+    bubble.innerHTML = oldHTML;
+  });
+  // 确认
+  document.getElementById('edInlineConfirm').addEventListener('click', function() {
+    var newText = ta.value.trim();
+    if (!newText || newText === oldText) { bubble.innerHTML = oldHTML; return; }
+    if (!confirm('编辑后将替换此消息并删除后续AI回复，确定继续？')) { bubble.innerHTML = oldHTML; return; }
+    agentMsgs[msgIdx].content = newText;
     agentMsgs[msgIdx].time = Date.now();
-    // 删除后续消息（直到下一条用户消息为止）
     var endIdx = agentMsgs.length;
     for (var i = msgIdx + 1; i < agentMsgs.length; i++) {
       if (agentMsgs[i].role === 'user') { endIdx = i; break; }
@@ -1245,10 +1261,12 @@ function editUserMsg(msgIdx) {
     if (endIdx > msgIdx + 1) {
       agentMsgs.splice(msgIdx + 1, endIdx - msgIdx - 1);
     }
-    // 同步后端
     api('POST','/writing-projects/'+projectId+'/undo-last').catch(function(){});
     renderAgentMessages();
-    requestAnimationFrame(function(){ var c=document.getElementById('subPanelChat'); if(c)c.scrollTop=c.scrollHeight; });
+  });
+  // Esc 取消
+  ta.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') { bubble.innerHTML = oldHTML; }
   });
 }
 
