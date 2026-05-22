@@ -7,78 +7,55 @@
 <style>
 :root { --bg:#0D0D0D; --panel:#171717; --text:#fff; --text2:#A1A1AA; --accent:#05A3C5; --danger:#F53F3F; --warn:#F5A623; --border:rgba(255,255,255,0.08); --radius:12px; }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--bg); color:var(--text); font-family:'Inter','Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; height:100vh; overflow:hidden; }
-
-/* 左栏：项目树 */
-#projectTree { position:fixed; left:0; top:0; bottom:0; width:240px; background:var(--panel); border-right:0.5px solid var(--border); z-index:100; display:flex; flex-direction:column; transition:width 0.05s; }
-#projectTree .tree-header { padding:14px 16px; border-bottom:0.5px solid var(--border); display:flex; align-items:center; gap:8px; flex-shrink:0; }
-#projectTree .tree-header h2 { font-size:14px; flex:1; }
-#projectTree .tree-header a { font-size:11px; color:var(--text2); text-decoration:none; padding:3px 8px; border-radius:4px; }
-#projectTree .tree-header a:hover { background:var(--border); color:var(--text); }
-#projectTree .tree-body { flex:1; overflow-y:auto; padding:8px; }
-#projectTree .tree-body::-webkit-scrollbar { width:4px; }
-#projectTree .tree-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
+body { background:var(--bg); color:var(--text); font-family:'Inter','Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+/* 顶栏标签 */
+#tabBar { display:flex; align-items:center; height:36px; background:var(--panel); border-bottom:0.5px solid var(--border); flex-shrink:0; overflow-x:auto; padding:0 4px; gap:1px; }
+#tabBar::-webkit-scrollbar { height:2px; }
+#tabBar::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.06); }
+.bar-tab { display:flex; align-items:center; gap:4px; padding:6px 12px; font-size:12px; color:var(--text2); cursor:pointer; border-radius:4px 4px 0 0; white-space:nowrap; border-bottom:2px solid transparent; transition:all 0.1s; user-select:none; }
+.bar-tab:hover { background:rgba(255,255,255,0.04); color:var(--text); }
+.bar-tab.active { color:var(--text); border-bottom-color:var(--accent); background:rgba(5,163,197,0.06); }
+.bar-tab .tab-close { font-size:10px; padding:1px 4px; border-radius:3px; opacity:0; transition:opacity 0.1s; }
+.bar-tab:hover .tab-close { opacity:0.7; }
+.bar-tab .tab-close:hover { opacity:1; background:rgba(245,63,63,0.2); color:var(--danger); }
+.bar-tab.fixed .tab-close { display:none; }
+.bar-spacer { flex:1; }
+.bar-link { font-size:11px; color:var(--text2); text-decoration:none; padding:4px 10px; border-radius:3px; white-space:nowrap; margin-right:6px; }
+.bar-link:hover { background:rgba(255,255,255,0.05); color:var(--text); }
+/* 内容区 */
+#tabContent { flex:1; overflow:hidden; position:relative; }
+.tab-panel { position:absolute; inset:0; display:none; flex-direction:column; overflow:hidden; }
+.tab-panel.active { display:flex; }
+/* 大纲树 */
+#panelOutline .outline-header { padding:10px 14px; border-bottom:0.5px solid var(--border); font-size:13px; font-weight:600; }
+#panelOutline .tree-body { flex:1; overflow-y:auto; padding:8px; }
+#panelOutline .tree-body::-webkit-scrollbar { width:4px; }
+#panelOutline .tree-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
 .tree-placeholder { text-align:center; padding:40px 16px; color:var(--text2); font-size:12px; }
-
-/* 可拖拽分隔条 */
-.resize-handle { position:fixed; top:0; bottom:0; width:5px; z-index:110; cursor:col-resize; background:transparent; transition:background 0.15s; }
-.resize-handle:hover, .resize-handle.dragging { background:var(--accent); opacity:0.5; }
-#resizeLeft { left:240px; }
-#resizeRight { right:360px; }
-
-/* 中栏：写作区 */
-#editorArea { position:fixed; left:245px; top:0; right:365px; bottom:0; display:flex; flex-direction:column; }
-#editorArea .editor-topbar { padding:10px 16px; border-bottom:0.5px solid var(--border); display:flex; align-items:center; gap:10px; flex-shrink:0; }
-#editorArea .editor-topbar .chap-title { font-size:13px; color:var(--text2); flex:1; }
-#editorArea .editor-topbar button { padding:4px 10px; border-radius:5px; border:0.5px solid var(--border); background:rgba(255,255,255,0.04); color:var(--text2); cursor:pointer; font-size:11px; font-family:inherit; }
-#editorArea .editor-topbar button:hover { background:rgba(255,255,255,0.08); color:var(--text); }
-#editorArea .editor-body { flex:1; overflow-y:auto; padding:24px 32px; }
-#editorArea .editor-body::-webkit-scrollbar { width:6px; }
-#editorArea .editor-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:3px; }
-#editorArea .editor-textarea { width:100%; min-height:60vh; background:transparent; border:none; color:var(--text); font-size:15px; line-height:2; font-family:'PingFang SC','Microsoft YaHei','Noto Serif SC',serif; outline:none; resize:none; }
-#editorArea .editor-textarea::placeholder { color:rgba(255,255,255,0.15); }
+/* 编辑器面板 */
+.editor-topbar { padding:10px 16px; border-bottom:0.5px solid var(--border); display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.editor-topbar .chap-title { font-size:13px; color:var(--text2); flex:1; }
+.editor-topbar button { padding:4px 10px; border-radius:5px; border:0.5px solid var(--border); background:rgba(255,255,255,0.04); color:var(--text2); cursor:pointer; font-size:11px; font-family:inherit; }
+.editor-topbar button:hover { background:rgba(255,255,255,0.08); color:var(--text); }
+.editor-body { flex:1; overflow-y:auto; padding:24px 32px; }
+.editor-body::-webkit-scrollbar { width:6px; }
+.editor-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:3px; }
+.editor-textarea { width:100%; min-height:60vh; background:transparent; border:none; color:var(--text); font-size:15px; line-height:2; font-family:'PingFang SC','Microsoft YaHei','Noto Serif SC',serif; outline:none; resize:none; }
 .editor-placeholder { text-align:center; padding:80px 40px; color:var(--text2); }
 .editor-placeholder .icon { font-size:48px; margin-bottom:16px; opacity:0.3; }
 .editor-placeholder p { font-size:14px; line-height:1.8; }
-
-/* 右栏：Agent 面板 (QQ群聊风格) */
-#agentPanel { position:fixed; right:0; top:0; bottom:0; width:360px; background:var(--panel); border-left:0.5px solid var(--border); z-index:100; display:flex; flex-direction:column; }
-#agentPanel .ap-header { padding:10px 14px; border-bottom:0.5px solid var(--border); display:flex; align-items:center; gap:8px; flex-shrink:0; }
-#agentPanel .ap-header .ap-tab { font-size:12px; cursor:pointer; padding:3px 8px; border-radius:4px; transition:all 0.12s; }
-#agentPanel .ap-header .ap-tab.active { color:var(--accent); background:rgba(5,163,197,0.1); }
-#agentPanel .ap-header .ap-tab:hover { background:rgba(255,255,255,0.05); }
-#agentPanel .online-count { font-size:10px; color:var(--text2); }
-#panelChat { flex:1; display:flex; flex-direction:column; overflow:hidden; }
-#panelChat .ap-messages { flex:1; overflow-y:auto; padding:10px 12px; }
-#panelChat .msg-inner { min-height:100%; display:flex; flex-direction:column; justify-content:flex-end; gap:6px; }
-#panelChat .ap-messages::-webkit-scrollbar { width:4px; }
-#panelChat .ap-messages::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
-#panelChat .ap-input { padding:8px 12px; border-top:0.5px solid var(--border); display:flex; gap:6px; flex-shrink:0; position:relative; }
-#panelChat .ap-input input { flex:1; padding:7px 10px; background:rgba(255,255,255,0.04); border:0.5px solid var(--border); border-radius:16px; color:var(--text); font-size:12px; font-family:inherit; outline:none; }
-#panelChat .ap-input input:focus { border-color:var(--accent); }
-#panelChat .ap-input button { padding:4px 12px; border-radius:14px; border:none; background:var(--accent); color:#fff; cursor:pointer; font-size:12px; font-family:inherit; }
-/* 未读消息提示 */
-.unread-badge { position:absolute; bottom:calc(100% + 4px); right:12px; background:var(--accent); color:#fff; border-radius:14px; padding:4px 10px; font-size:11px; cursor:pointer; z-index:10; display:none; box-shadow:0 2px 8px rgba(0,0,0,0.4); animation:bounceIn 0.3s; white-space:nowrap; }
-@keyframes bounceIn { from{transform:scale(0.8);opacity:0;} to{transform:scale(1);opacity:1;} }
-.unread-badge.show { display:block; }
-.unread-badge:hover { opacity:0.85; }
-/* @提及下拉 */
-.mention-dropdown { position:absolute; bottom:46px; left:12px; right:12px; background:var(--panel); border:0.5px solid var(--border); border-radius:8px; max-height:180px; overflow-y:auto; z-index:20; display:none; box-shadow:0 -4px 16px rgba(0,0,0,0.4); }
-.mention-dropdown.show { display:block; }
-.mention-dropdown .m-item { padding:7px 10px; cursor:pointer; font-size:11px; display:flex; align-items:center; gap:6px; transition:background 0.08s; }
-.mention-dropdown .m-item:hover { background:rgba(5,163,197,0.12); color:var(--text); }
-.mention-dropdown .m-item .m-avatar { width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; flex-shrink:0; }
-.mention-dropdown .m-item .m-name { flex:1; }
-.mention-dropdown .m-item .m-desc { font-size:9px; color:var(--text2); }
-
+.editor-toolbar { display:flex; gap:2px; padding:6px 16px; border-bottom:0.5px solid var(--border); flex-shrink:0; flex-wrap:wrap; }
+.editor-toolbar button, .editor-toolbar select { padding:3px 8px; border-radius:4px; border:0.5px solid transparent; background:transparent; color:var(--text2); cursor:pointer; font-size:11px; font-family:inherit; }
+.editor-toolbar button:hover, .editor-toolbar select:hover { background:rgba(255,255,255,0.06); color:var(--text); }
+.editor-toolbar .sep { width:0.5px; background:var(--border); margin:2px 6px; }
 /* 聊天消息 */
 .msg { display:flex; gap:6px; max-width:100%; animation:fadeIn 0.2s; }
 @keyframes fadeIn { from{opacity:0;transform:translateY(4px);} to{opacity:1;transform:translateY(0);} }
 .msg .avatar { width:28px; height:28px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:14px; margin-top:2px; }
-.msg .bubble { padding:8px 12px; border-radius:10px; font-size:12px; line-height:1.55; word-break:break-word; max-width:calc(100% - 40px); overflow-wrap:break-word; }
+.msg .bubble { padding:8px 12px; border-radius:10px; font-size:12px; line-height:1.55; word-break:break-word; max-width:100%; overflow-wrap:break-word; }
 .msg .bubble b, .msg .bubble strong { font-weight:700; }
 .msg.system-msg { justify-content:center; }
-.msg.system-msg .sys-text { font-size:10px; color:var(--text2); background:rgba(255,255,255,0.03); padding:2px 8px; border-radius:10px; max-width:280px; text-align:center; }
+.msg.system-msg .sys-text { font-size:10px; color:var(--text2); background:rgba(255,255,255,0.03); padding:2px 8px; border-radius:10px; max-width:360px; text-align:center; }
 .msg.user-msg { flex-direction:row-reverse; }
 .msg.user-msg .bubble { background:var(--accent); color:#fff; }
 .msg.agent-msg .bubble { background:rgba(255,255,255,0.06); }
@@ -87,931 +64,101 @@ body { background:var(--bg); color:var(--text); font-family:'Inter','Segoe UI','
 .msg .think-toggle:hover { background:rgba(5,163,197,0.15); }
 .msg .think-body { display:none; font-size:10px; color:var(--text2); background:rgba(0,0,0,0.2); padding:6px 10px; border-radius:4px; margin-top:4px; border-left:2px solid var(--accent); white-space:pre-wrap; max-height:200px; overflow-y:auto; }
 .msg .think-body.show { display:block; }
-/* Agent 消息格式化 */
 .msg .bubble p { margin:0 0 6px; line-height:1.6; }
 .msg .bubble p:last-child { margin-bottom:0; }
-.msg .bubble br { display:block; content:''; margin-top:2px; }
 .msg-codeblock { background:rgba(0,0,0,0.4); border:0.5px solid rgba(255,255,255,0.1); border-radius:6px; padding:8px 10px; margin:6px 0; font-family:'Consolas','Monaco','Courier New',monospace; font-size:10px; line-height:1.5; white-space:pre-wrap; word-break:break-all; max-height:200px; overflow-y:auto; color:var(--text2); }
 .msg-codeblock::-webkit-scrollbar { width:3px; }
 .msg-codeblock::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.1); border-radius:2px; }
-
-/* 面板切换 */
+/* 聊天面板内部 */
+.chat-layout { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+.ap-header { padding:8px 14px; border-bottom:0.5px solid var(--border); display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.ap-header .ap-tab { font-size:11px; cursor:pointer; padding:3px 8px; border-radius:4px; transition:all 0.12s; color:var(--text2); }
+.ap-header .ap-tab.active { color:var(--accent); background:rgba(5,163,197,0.1); }
+.ap-header .ap-tab:hover { background:rgba(255,255,255,0.05); }
+.ap-messages { flex:1; overflow-y:auto; padding:10px 12px; }
+.ap-messages::-webkit-scrollbar { width:4px; }
+.ap-messages::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
+.msg-inner { min-height:100%; display:flex; flex-direction:column; justify-content:flex-end; gap:6px; }
+.ap-input { padding:8px 12px; border-top:0.5px solid var(--border); display:flex; gap:6px; flex-shrink:0; position:relative; }
+.ap-input input { flex:1; padding:7px 10px; background:rgba(255,255,255,0.04); border:0.5px solid var(--border); border-radius:16px; color:var(--text); font-size:12px; font-family:inherit; outline:none; }
+.ap-input input:focus { border-color:var(--accent); }
+.ap-input button { padding:4px 12px; border-radius:14px; border:none; background:var(--accent); color:#fff; cursor:pointer; font-size:12px; font-family:inherit; }
+.unread-badge { position:absolute; bottom:calc(100% + 4px); right:12px; background:var(--accent); color:#fff; border-radius:14px; padding:4px 10px; font-size:11px; cursor:pointer; z-index:10; display:none; box-shadow:0 2px 8px rgba(0,0,0,0.4); animation:bounceIn 0.3s; white-space:nowrap; }
+@keyframes bounceIn { from{transform:scale(0.8);opacity:0;} to{transform:scale(1);opacity:1;} }
+.unread-badge.show { display:block; }
+.unread-badge:hover { opacity:0.85; }
+.mention-dropdown { position:absolute; bottom:46px; left:12px; right:12px; background:var(--panel); border:0.5px solid var(--border); border-radius:8px; max-height:180px; overflow-y:auto; z-index:20; display:none; box-shadow:0 -4px 16px rgba(0,0,0,0.4); }
+.mention-dropdown.show { display:block; }
+.mention-dropdown .m-item { padding:7px 10px; cursor:pointer; font-size:11px; display:flex; align-items:center; gap:6px; transition:background 0.08s; }
+.mention-dropdown .m-item:hover { background:rgba(5,163,197,0.12); color:var(--text); }
+.mention-dropdown .m-item .m-avatar { width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; flex-shrink:0; }
+.mention-dropdown .m-item .m-name { flex:1; }
+.mention-dropdown .m-item .m-desc { font-size:9px; color:var(--text2); }
 #panelChars { flex:1; display:none; flex-direction:column; overflow-y:auto; padding:8px; }
-
-/* 输入区 */
-#agentPanel .ap-input { padding:8px 12px; border-top:0.5px solid var(--border); display:flex; gap:6px; flex-shrink:0; }
-#agentPanel .ap-input input { flex:1; padding:7px 10px; background:rgba(255,255,255,0.04); border:0.5px solid var(--border); border-radius:16px; color:var(--text); font-size:12px; font-family:inherit; outline:none; }
-#agentPanel .ap-input input:focus { border-color:var(--accent); }
-#agentPanel .ap-input button { padding:4px 12px; border-radius:14px; border:none; background:var(--accent); color:#fff; cursor:pointer; font-size:12px; font-family:inherit; }
+#panelToken { border-top:0.5px solid var(--border); padding:6px 10px; flex-shrink:0; cursor:pointer; }
+#panelToken .token-detail { display:none; }
+#panelToken.expanded .token-detail { display:block; }
 .ap-loading { text-align:center; padding:40px; color:var(--text2); font-size:12px; }
-
-/* 富文本工具栏 */
-.editor-toolbar { display:flex; gap:2px; padding:6px 16px; border-bottom:0.5px solid var(--border); flex-shrink:0; flex-wrap:wrap; }
-.editor-toolbar button, .editor-toolbar select { padding:3px 8px; border-radius:4px; border:0.5px solid transparent; background:transparent; color:var(--text2); cursor:pointer; font-size:11px; font-family:inherit; }
-.editor-toolbar button:hover, .editor-toolbar select:hover { background:rgba(255,255,255,0.06); color:var(--text); }
-.editor-toolbar .sep { width:0.5px; background:var(--border); margin:2px 6px; }
 </style>
 </head>
 <body>
-
-<!-- 左栏：项目树 -->
-<div id="projectTree">
-  <div class="tree-header">
-    <h2>📖 项目大纲</h2>
-    <a href="/projects.html?mode=writing">← 返回</a>
+<div id="tabBar">
+  <div class="bar-tab fixed active" data-tab="outline" onclick="switchTab('outline')">📖 大纲</div>
+  <div class="bar-tab fixed" data-tab="chat" onclick="switchTab('chat')">💬 对话</div>
+  <div class="bar-spacer"></div>
+  <a href="/projects.html?mode=writing" class="bar-link">← 返回</a>
+</div>
+<div id="tabContent">
+  <div class="tab-panel active" id="panelOutline">
+    <div class="outline-header">📖 项目大纲</div>
+    <div class="tree-body" id="treeBody"><div class="tree-placeholder">创建写作项目后<br>大纲结构将显示在这里</div></div>
   </div>
-  <div class="tree-body" id="treeBody">
-    <div class="tree-placeholder">创建写作项目后<br>大纲结构将显示在这里</div>
+  <div class="tab-panel" id="panelChat">
+    <div class="chat-layout">
+      <div class="ap-header">
+        <span class="ap-tab active" onclick="switchChatSubTab('chat')" id="tabSubChat">💬 聊天</span>
+        <span class="ap-tab" onclick="switchChatSubTab('chars')" id="tabSubChars">👥 角色</span>
+        <span style="flex:1;"></span>
+        <span style="font-size:10px;color:var(--text2);" id="onlineAgents">1人</span>
+      </div>
+      <div id="subPanelChat" class="ap-messages"><div class="ap-loading">加载历史对话中...</div></div>
+      <div id="subPanelChars" class="ap-messages"><button onclick="generateCharacters()" id="btnGenChars" style="padding:6px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px;font-family:inherit;width:100%;margin:8px;">🎭 生成角色</button><div id="charList"></div></div>
+      <div class="ap-input" id="chatInputArea">
+        <div class="unread-badge" id="unreadBadge" onclick="scrollToUnread()"></div>
+        <div class="mention-dropdown" id="mentionDropdown"></div>
+        <input type="text" id="agentInput" placeholder="输入消息或 @Agent..." onkeydown="handleInputKey(event)" oninput="handleMentionInput()">
+        <button id="btnSend" onclick="sendAgentMessage()">发送</button>
+        <button id="btnStop" onclick="stopAgentCall()" style="display:none;background:rgba(245,63,63,0.15)!important;color:#F53F3F!important;border:0.5px solid rgba(245,63,63,0.3)!important;">⏹ 停止</button>
+      </div>
+      <div id="panelToken" onclick="this.classList.toggle('expanded')">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text2);"><span>💰 Token</span><span id="tokenToday">加载中</span></div>
+        <div class="token-detail"><div id="tokenChart" style="font-size:9px;color:var(--text2);"></div><div style="font-size:9px;color:var(--text2);" id="tokenCost"></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="tab-panel" id="panelEditor">
+    <div class="editor-topbar"><span class="chap-title" id="chapTitle">选择章节开始写作</span><span style="font-size:10px;color:var(--text2);" id="wordCount">字数: 0</span><button onclick="autoSave()">💾 保存</button></div>
+    <div class="editor-toolbar" id="editorToolbar">
+      <select onchange="document.execCommand('formatBlock',false,this.value);this.selectedIndex=0;" style="width:80px;"><option value="">正文</option><option value="h2">标题</option><option value="h3">副标题</option></select><span class="sep"></span>
+      <button onclick="document.execCommand('bold')"><b>B</b></button><button onclick="document.execCommand('italic')"><i>I</i></button><button onclick="document.execCommand('underline')"><u>U</u></button><span class="sep"></span>
+      <button onclick="document.execCommand('justifyLeft')">左对齐</button><button onclick="document.execCommand('justifyCenter')">居中</button><span class="sep"></span>
+      <button onclick="document.execCommand('insertUnorderedList')">• 列表</button><button onclick="document.execCommand('insertOrderedList')">1. 列表</button>
+    </div>
+    <div class="editor-body"><div class="editor-placeholder" id="editorPlaceholder"><div class="icon">✍️</div><p>在大纲树中双击章节开始编辑</p></div><div id="editableContent" class="editor-textarea" contenteditable="true" style="display:none;"></div></div>
   </div>
 </div>
-
-<!-- 中栏：写作区 -->
-<div id="editorArea">
-  <div class="editor-topbar">
-    <span class="chap-title" id="chapTitle">选择或创建章节开始写作</span>
-    <span style="font-size:10px;color:var(--text2);" id="wordCount">字数: 0</span>
-    <button onclick="autoSave()" title="保存">💾 保存</button>
-  </div>
-  <div class="editor-toolbar" id="editorToolbar">
-    <select onchange="document.execCommand('formatBlock',false,this.value);this.selectedIndex=0;" style="width:80px;">
-      <option value="">正文</option><option value="h2">标题</option><option value="h3">副标题</option>
-    </select>
-    <span class="sep"></span>
-    <button onclick="document.execCommand('bold')" title="加粗"><b>B</b></button>
-    <button onclick="document.execCommand('italic')" title="斜体"><i>I</i></button>
-    <button onclick="document.execCommand('underline')" title="下划线"><u>U</u></button>
-    <span class="sep"></span>
-    <button onclick="document.execCommand('justifyLeft')">左对齐</button>
-    <button onclick="document.execCommand('justifyCenter')">居中</button>
-    <span class="sep"></span>
-    <button onclick="document.execCommand('insertUnorderedList')">• 列表</button>
-    <button onclick="document.execCommand('insertOrderedList')">1. 列表</button>
-  </div>
-  <div class="editor-body">
-    <div class="editor-placeholder" id="editorPlaceholder">
-      <div class="icon">✍️</div>
-      <p>欢迎使用写作模式<br>请在右侧 Agent 面板中与主Agent 对话<br>开始你的创作之旅</p>
-    </div>
-    <div id="editableContent" class="editor-textarea" contenteditable="true" style="display:none;"></div>
-  </div>
-</div>
-
-<!-- 可拖拽分隔条 -->
-<div class="resize-handle" id="resizeLeft"></div>
-<div class="resize-handle" id="resizeRight"></div>
-
-<!-- 右栏：Agent 面板 -->
-<div id="agentPanel">
-  <div class="ap-header" style="gap:8px;">
-    <span class="ap-tab active" onclick="switchAgentTab('chat')" id="tabChat" style="cursor:pointer;font-size:12px;">💬 聊天</span>
-    <span class="ap-tab" onclick="switchAgentTab('chars')" id="tabChars" style="cursor:pointer;font-size:12px;color:var(--text2);">👥 角色</span>
-    <span style="flex:1;"></span>
-    <span class="online-count" id="onlineAgents" style="font-size:10px;color:var(--text2);">1人</span>
-  </div>
-  <!-- 聊天面板 -->
-  <div id="panelChat">
-    <div class="ap-messages" id="agentMessages">
-      <div class="ap-loading">加载历史对话中...</div>
-    </div>
-    <div class="unread-badge" id="unreadBadge" onclick="scrollToUnread()"></div>
-    <div class="ap-input">
-      <div class="mention-dropdown" id="mentionDropdown"></div>
-      <input type="text" id="agentInput" placeholder="输入消息或 @Agent..." onkeydown="handleInputKey(event)" oninput="handleMentionInput()">
-      <button id="btnSend" onclick="sendAgentMessage()">发送</button>
-      <button id="btnStop" onclick="stopAgentCall()" style="display:none;background:rgba(245,63,63,0.15)!important;color:#F53F3F!important;border:0.5px solid rgba(245,63,63,0.3)!important;">⏹ 停止</button>
-    </div>
-  </div>
-  <!-- 角色面板 -->
-  <div id="panelChars" style="display:none;flex:1;overflow-y:auto;padding:8px;flex-direction:column;gap:8px;">
-    <button onclick="generateCharacters()" id="btnGenChars" style="padding:6px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px;font-family:inherit;">🎭 生成角色</button>
-    <div id="charList"></div>
-  </div>
-  <!-- Token面板 -->
-  <div id="panelToken" style="border-top:0.5px solid var(--border);padding:6px 10px;flex-shrink:0;cursor:pointer;" onclick="this.classList.toggle('expanded')">
-    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text2);">
-      <span>💰 Token</span><span id="tokenToday">加载中</span>
-    </div>
-    <div style="display:none;" class="token-detail">
-      <div id="tokenChart" style="font-size:9px;color:var(--text2);margin-top:4px;"></div>
-      <div style="font-size:9px;color:var(--text2);margin-top:2px;" id="tokenCost"></div>
-    </div>
-  </div>
-</div>
-
 <script>
-var token = localStorage.getItem('canvas_token');
-if (!token) { window.location.replace('/login.html'); }
-var encodedPid = new URLSearchParams(location.search).get('pid');
-var projectId = encodedPid ? Math.round(parseInt(encodedPid) / 1114514) : null;
-if (!projectId) { window.location.replace('/projects.html'); }
-console.log('[Write] projectId='+projectId+' encoded='+encodedPid);
-
-var API = '/api';
-function api(method, path, body) {
-  var opts = { method:method, headers:{'Content-Type':'application/json','Authorization':'Bearer '+token} };
-  if (body) opts.body = JSON.stringify(body);
-  return fetch(API+path, opts).then(function(r) {
-    if (r.status===401) { return r.json().then(function(d){ var kicked=d&&d.error&&d.error.indexOf('已在其他设备登录')>=0; localStorage.removeItem('canvas_token'); localStorage.removeItem('canvas_username'); window.location.replace('/login.html'+(kicked?'?reason=kicked':'')); return Promise.reject(); }).catch(function(){ localStorage.removeItem('canvas_token'); localStorage.removeItem('canvas_username'); window.location.replace('/login.html'); return Promise.reject(); }); }
-    var ct = r.headers.get('content-type')||'';
-    if (ct.indexOf('json')>=0) return r.json();
-    return r.text().then(function(t){ try { return JSON.parse(t); } catch(e) { return null; } });
-  });
-}
-
-function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function toast(m,t){var el=document.getElementById('_toast');if(!el){el=document.createElement('div');el.id='_toast';el.style.cssText='position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999;padding:8px 20px;border-radius:8px;font-size:13px;font-family:inherit;pointer-events:none;opacity:0;transition:opacity 0.3s;max-width:500px;text-align:center;';document.body.appendChild(el);}el.textContent=m;el.style.background=t==='error'?'rgba(245,63,63,0.9)':t==='warn'?'rgba(245,166,35,0.9)':'rgba(0,180,100,0.9)';el.style.color='#fff';el.style.opacity='1';if(el._t)clearTimeout(el._t);el._t=setTimeout(function(){el.style.opacity='0';},2500);}
-function showPrompt(msg,defVal,cb){var ov=document.createElement('div');ov.className='prompt-overlay';ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';ov.innerHTML='<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:380px;"><div style="font-size:14px;margin-bottom:12px;color:#fff;">'+escHtml(msg)+'</div><input id="_promptInp" style="width:100%;padding:8px 12px;background:rgba(255,255,255,0.04);border:0.5px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:13px;font-family:inherit;outline:none;" value="'+escHtml(defVal||'')+'"><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'.prompt-overlay\').remove()">取消</button><button style="padding:8px 18px;border-radius:6px;border:none;background:#05A3C5;color:#fff;cursor:pointer;font-family:inherit;" onclick="var v=document.getElementById(\'_promptInp\').value;var ov2=this.closest(\'.prompt-overlay\');ov2.remove();(_pCb||function(){})(v)">确定</button></div></div>';document.body.appendChild(ov);window._pCb=cb;ov.addEventListener('click',function(e){if(e.target===ov){ov.remove();}});}
-
-// ==================== 自动保存 ====================
-var saveTimer = null;
-var writingData = { title:'', content:'' };
-
-function autoSave() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(function() {
-    var ed = document.getElementById('editableContent');
-    writingData.content = ed ? ed.innerHTML : '';
-    // 如果有活跃章节，保存章节内容
-    if (writingData.chapterId) {
-      var wc = (ed.textContent||'').replace(/\s/g,'').length;
-      api('PUT','/writing-projects/'+projectId+'/chapters/'+writingData.chapterId, { content_text:writingData.content, word_count:wc }).then(function() {
-        console.log('[Write] 章节自动保存 id='+writingData.chapterId+' 字数='+wc);
-      });
-    }
-    api('PUT','/writing-projects/'+projectId, writingData).then(function() {
-      console.log('[Write] 项目自动保存完成');
-    });
-  }, 1000);
-}
-
-// 内容变更监听
-var edDiv = document.getElementById('editableContent');
-edDiv.addEventListener('input', function() {
-  var wc = (edDiv.textContent||'').replace(/\s/g,'').length;
-  document.getElementById('wordCount').textContent = '字数: '+wc;
-  autoSave();
-});
-
-// ==================== Agent 消息系统 ====================
-var agentMsgs = [];
-// Agent 显示名称（可自定义，存localStorage）
-var agentDefaults = {
-  orchestrator: { name:'策划',  icon:'🎭', desc:'调配师·采访需求' },
-  outliner:     { name:'大纲',  icon:'📋', desc:'生成卷章大纲' },
-  character:    { name:'角色',  icon:'👥', desc:'设计角色档案' },
-  crawler:      { name:'爬虫',  icon:'🕷️', desc:'爬取热门小说' },
-  dialog:       { name:'对话',  icon:'💬', desc:'角色扮演对话' },
-  reviewer:     { name:'审核',  icon:'🔍', desc:'一致性检查' },
-  skill_optimizer: { name:'技能优化', icon:'🧠', desc:'分析习惯产出Skill' },
-};
-
-function loadAgentNames() {
-  var saved = localStorage.getItem('write_agent_names');
-  if (saved) { try { var d=JSON.parse(saved); Object.assign(agentDefaults, d); } catch(e){} }
-}
-function saveAgentNames() { localStorage.setItem('write_agent_names', JSON.stringify(agentDefaults)); }
-function getAgentName(id) { return (agentDefaults[id]&&agentDefaults[id].name) || id; }
-function getAgentIcon(id) { return (agentDefaults[id]&&agentDefaults[id].icon) || '🤖'; }
-function renameAgent(id) {
-  var cur = getAgentName(id);
-  showPrompt('修改「'+id+'」的显示名:', cur, function(nn) {
-    if (nn && nn.trim()) {
-      agentDefaults[id].name = nn.trim(); saveAgentNames(); loadMentionList();
-      renderAgentMessages(); // 刷新所有消息中的名称
-    }
-  });
-}
-
-function loadMentionList() {
-  mentionAgents = [];
-  Object.keys(agentDefaults).forEach(function(id) {
-    var a = agentDefaults[id];
-    mentionAgents.push({ id:id, name:a.name, icon:a.icon, desc:a.desc });
-  });
-}
-var mentionAgents = [];
-
-loadAgentNames();
-loadMentionList();
-
-function handleMentionInput() {
-  var inp = document.getElementById('agentInput');
-  var val = inp.value;
-  var cursorPos = inp.selectionStart;
-  // 查找光标前最近的@
-  var atIdx = -1;
-  for (var i = cursorPos-1; i >= 0; i--) {
-    if (val[i] === '@') { atIdx = i; break; }
-    if (val[i] === ' ' || val[i] === '\n') break;
-  }
-  var dropdown = document.getElementById('mentionDropdown');
-  if (atIdx >= 0) {
-    var query = val.substring(atIdx+1, cursorPos).toLowerCase();
-    var filtered = mentionAgents.filter(function(a) {
-      return a.name.toLowerCase().indexOf(query)>=0 || a.id.toLowerCase().indexOf(query)>=0;
-    });
-    if (filtered.length) {
-      var html = '';
-      filtered.forEach(function(a) {
-        html += '<div class="m-item" onclick="selectMention(\''+a.id+'\','+atIdx+')">';
-        html += '<span class="m-avatar">'+a.icon+'</span>';
-        html += '<span class="m-name">'+escHtml(a.name)+'</span>';
-        html += '<span class="m-desc">'+escHtml(a.desc)+'</span>';
-        html += '</div>';
-      });
-      dropdown.innerHTML = html;
-      dropdown.classList.add('show');
-      return;
-    }
-  }
-  dropdown.classList.remove('show');
-}
-
-function selectMention(agentId, atIdx) {
-  var inp = document.getElementById('agentInput');
-  var val = inp.value;
-  var cursorPos = inp.selectionStart;
-  var agent = mentionAgents.find(function(a){return a.id===agentId;});
-  var name = agent ? agent.name : agentId;
-  // 替换 @xxx 为 @Agent名
-  inp.value = val.substring(0, atIdx) + '@' + name + ' ' + val.substring(cursorPos);
-  document.getElementById('mentionDropdown').classList.remove('show');
-  inp.focus();
-  inp.selectionStart = inp.selectionEnd = atIdx + name.length + 2; // 光标移到 @Agent名 后面
-}
-
-function handleInputKey(e) {
-  var dropdown = document.getElementById('mentionDropdown');
-  if (dropdown.classList.contains('show')) {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      var items = dropdown.querySelectorAll('.m-item');
-      var idx = -1;
-      items.forEach(function(it, i) { if (it.style.background) idx = i; });
-      if (e.key==='ArrowDown') idx = (idx+1) % items.length;
-      else idx = idx <= 0 ? items.length-1 : idx-1;
-      items.forEach(function(it, i) {
-        it.style.background = i===idx ? 'rgba(5,163,197,0.12)' : '';
-        it.style.color = i===idx ? 'var(--text)' : '';
-      });
-      return;
-    }
-    if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault();
-      var sel = dropdown.querySelector('.m-item[style]');
-      if (sel) { sel.click(); return; }
-      dropdown.querySelector('.m-item').click();
-      return;
-    }
-    if (e.key === 'Escape') { dropdown.classList.remove('show'); return; }
-  }
-  if (e.key === 'Enter') { sendAgentMessage(); }
-}
-
-function formatAgentContent(text) {
-  if (!text) return '';
-  // 1. 提取代码块 ```...```
-  var codeBlocks = [];
-  var t = text.replace(/```(\w*)\s*([\s\S]*?)```/g, function(_, lang, code) {
-    codeBlocks.push(code.trim());
-    return '%%CODEBLOCK_'+(codeBlocks.length-1)+'%%';
-  });
-  // 2. 提取表格（行级处理）
-  var tables = [];
-  t = t.replace(/(\|[^\n]+\|\n)+\|?[\s]*(\|[-:| ]+\|\n)+\|?[\s]*(\|[^\n]+\|\n?)+/g, function(m) {
-    tables.push(m.trim());
-    return '%%TABLE_'+(tables.length-1)+'%%';
-  });
-  // 3. 安全转义（表格占位符之后）
-  t = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  // 4. 标题 ### → <h4>
-  t = t.replace(/^###\s+(.+)$/gm, '<h4 style="margin:8px 0 4px;font-size:13px;">$1</h4>');
-  t = t.replace(/^##\s+(.+)$/gm, '<h3 style="margin:10px 0 6px;font-size:14px;">$1</h3>');
-  // 5. 分割线 --- → <hr>
-  t = t.replace(/^[-*]{3,}\s*$/gm, '<hr style="border:0.5px solid var(--border);margin:8px 0;">');
-  // 6. 加粗 **text**（允许前后空格）
-  t = t.replace(/\*\*\s*(.+?)\s*\*\*/g, '<b>$1</b>');
-  // 7. 段落 \n\n → </p><p>
-  t = '<p>'+t.split(/\n\n+/).join('</p><p>')+'</p>';
-  // 8. 表格还原（生成 HTML table）
-  tables.forEach(function(tbl, i) {
-    var rows = tbl.split('\n').filter(function(r){ return r.indexOf('|')>=0 && !r.match(/^\|?[\s]*[-:| ]+\|?[\s]*$/); });
-    var alignRow = tbl.split('\n').find(function(r){ return r.match(/^\|?[\s]*[-:| ]+\|?[\s]*$/); });
-    var html = '<table style="border-collapse:collapse;width:100%;margin:6px 0;font-size:11px;"><tbody>';
-    rows.forEach(function(row, ri) {
-      html += '<tr>';
-      var cells = row.split('|').filter(function(c,ci,arr){ return ci>0&&ci<arr.length-1||(ci===0&&row.indexOf('|')===0)||(ci===arr.length-1&&row.lastIndexOf('|')===row.length-1); });
-      // 简化：按 | 分割取有效单元格
-      var parts = row.replace(/^\|/, '').replace(/\|$/, '').split('|');
-      parts.forEach(function(cell) {
-        var tag = ri===0 ? 'th' : 'td';
-        var style = ri===0 ? 'padding:4px 8px;border:0.5px solid var(--border);background:rgba(5,163,197,0.12);text-align:left;' : 'padding:4px 8px;border:0.5px solid var(--border);text-align:left;';
-        var cellText = cell.trim().replace(/\*\*\s*(.+?)\s*\*\*/g, '<b>$1</b>');
-        html += '<'+tag+' style="'+style+'">'+cellText+'</'+tag+'>';
-      });
-      html += '</tr>';
-    });
-    html += '</tbody></table>';
-    t = t.replace('%%TABLE_'+i+'%%', html);
-  });
-  // 9. 单个换行 → <br>（但跳过在标签内的）
-  t = t.replace(/\n/g, '<br>');
-  // 10. 代码块还原
-  codeBlocks.forEach(function(code, i) {
-    t = t.replace('%%CODEBLOCK_'+i+'%%', '<div class="msg-codeblock">'+code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>');
-  });
-  // 清理空段落
-  t = t.replace(/<p>\s*<br>\s*<\/p>/g, '');
-  return t;
-}
-
-// ==================== 未读追踪（哨兵 + IntersectionObserver） ====================
-var unreadCount = 0;
-var unreadObserver = null;
-
-function scrollToBottom() {
-  var c = document.getElementById('agentMessages');
-  if (c) { c.scrollTop = c.scrollHeight; unreadCount = 0; updateUnreadBadge(); }
-}
-
-function scrollToBottomIfAtBottom() {
-  var c = document.getElementById('agentMessages');
-  if (!c) return;
-  var atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 60;
-  if (atBottom) { c.scrollTop = c.scrollHeight; unreadCount = 0; }
-  else { unreadCount = countMessagesBelowViewport(); }
-  updateUnreadBadge();
-}
-
-function setupUnreadObserver() {
-  var container = document.getElementById('agentMessages');
-  if (!container) return;
-  if (unreadObserver) unreadObserver.disconnect();
-  unreadObserver = new IntersectionObserver(function(entries) {
-    var sentinelVisible = entries[0] && entries[0].isIntersecting;
-    if (sentinelVisible) {
-      unreadCount = 0;
-    } else {
-      unreadCount = countMessagesBelowViewport();
-    }
-    updateUnreadBadge();
-  }, { root: container, threshold: 0.1 });
-  // 哨兵在 msg-inner 末尾，每次渲染后重新观察
-  var sentinel = container.querySelector('.msg-sentinel');
-  if (sentinel) unreadObserver.observe(sentinel);
-}
-
-function countMessagesBelowViewport() {
-  var container = document.getElementById('agentMessages');
-  if (!container) return 0;
-  var cb = container.getBoundingClientRect().bottom;
-  var msgs = container.querySelectorAll('.msg:not(.msg-sentinel)');
-  var count = 0;
-  msgs.forEach(function(m) {
-    if (m.getBoundingClientRect().top >= cb - 2) count++;
-  });
-  return count;
-}
-
-function scrollToUnread() {
-  var container = document.getElementById('agentMessages');
-  container.scrollTop = container.scrollHeight;
-  unreadCount = 0;
-  updateUnreadBadge();
-}
-
-function updateUnreadBadge() {
-  var badge = document.getElementById('unreadBadge');
-  if (unreadCount > 0) {
-    badge.textContent = unreadCount + ' 条新消息';
-    badge.classList.add('show');
-  } else {
-    badge.classList.remove('show');
-  }
-}
-
-// 滚动时更新未读计数
-var _unreadScrollTimer = 0;
-
-function countAndUpdateUnread() {
-  var container = document.getElementById('agentMessages');
-  if (!container) return;
-  var sentinel = container.querySelector('.msg-sentinel');
-  if (!sentinel) return;
-  var cr = container.getBoundingClientRect();
-  var sr = sentinel.getBoundingClientRect();
-  // 哨兵底部在容器底部上方 → 可见（用户在底部）
-  if (sr.bottom <= cr.bottom + 4) {
-    unreadCount = 0;
-  } else {
-    unreadCount = countMessagesBelowViewport();
-  }
-  updateUnreadBadge();
-}
-
-// 追加单条消息到 DOM（不触发全量重绘，保留哨兵和滚动状态）
-function renderSingleMsg(m) {
-  if (m.type === 'system') return '<div class="msg system-msg"><span class="sys-text">'+escHtml(m.content)+'</span></div>';
-  if (m.role === 'user') return '<div class="msg user-msg"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+'</div></div>';
-  var avatar = getAgentIcon(m.agent);
-  var h = '<div class="msg agent-msg"><div class="avatar" style="font-size:16px;">'+avatar+'</div><div class="bubble">';
-  h += '<div style="font-size:10px;color:var(--accent);margin-bottom:2px;cursor:pointer;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(m.agent||'agent')+'\')">'+escHtml(getAgentName(m.agent))+'</div>';
-  if (m.thinking) {
-    h += '<span class="think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'">💭 思考过程</span>';
-    h += '<div class="think-body">'+formatAgentContent(m.thinking)+'</div>';
-  }
-  h += formatAgentContent(m.content)+'</div></div>';
-  return h;
-}
-
-function appendMsgToDOM(html) {
-  var inner = document.querySelector('#agentMessages .msg-inner');
-  if (!inner) return;
-  var sentinel = inner.querySelector('.msg-sentinel');
-  // 移除旧的思考中占位
-  var thinkingEl = inner.querySelector('.msg-thinking');
-  if (thinkingEl) thinkingEl.remove();
-  if (sentinel) {
-    sentinel.insertAdjacentHTML('beforebegin', html);
-  } else {
-    inner.insertAdjacentHTML('beforeend', html);
-  }
-}
-
-function renderPendingAgent() {
-  var inner = document.querySelector('#agentMessages .msg-inner');
-  if (!inner) return;
-  var old = inner.querySelector('.msg-thinking');
-  if (old) old.remove();
-  if (!pendingAgent) return;
-  var pa = pendingAgent;
-  var html = '<div class="msg agent-msg msg-thinking"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div>⏳ 思考中...</div></div>';
-  var sentinel = inner.querySelector('.msg-sentinel');
-  if (sentinel) sentinel.insertAdjacentHTML('beforebegin', html);
-  else inner.insertAdjacentHTML('beforeend', html);
-}
-
-function renderAgentMessages() {
-  var container = document.getElementById('agentMessages');
-  if (!container) return;
-  var wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
-  if (!agentMsgs.length) {
-    container.innerHTML = '<div class="ap-loading">暂无对话记录<br><span style="font-size:10px;color:var(--text2);">在下方输入消息开始创作</span></div>';
-    unreadCount = 0; updateUnreadBadge();
-    return;
-  }
-  var html = '';
-  agentMsgs.forEach(function(m) {
-    if (m.type === 'system') {
-      html += '<div class="msg system-msg"><span class="sys-text">'+escHtml(m.content)+'</span></div>';
-    } else if (m.role === 'user') {
-      html += '<div class="msg user-msg"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+'</div></div>';
-    } else {
-      var avatar = getAgentIcon(m.agent);
-      html += '<div class="msg agent-msg"><div class="avatar" style="font-size:16px;">'+avatar+'</div><div class="bubble">';
-      html += '<div style="font-size:10px;color:var(--accent);margin-bottom:2px;cursor:pointer;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(m.agent||'agent')+'\')">'+escHtml(getAgentName(m.agent))+'</div>';
-      if (m.thinking) {
-        html += '<span class="think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'">💭 思考过程</span>';
-        html += '<div class="think-body">'+formatAgentContent(m.thinking)+'</div>';
-      }
-      html += formatAgentContent(m.content)+'</div></div>';
-    }
-  });
-  if (pendingAgent) {
-    var pa = pendingAgent;
-    html += '<div class="msg agent-msg"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div>⏳ 思考中...</div></div>';
-  }
-  // 哨兵：1px 透明元素，IntersectionObserver 监听其在视口内/外
-  html += '<div class="msg msg-sentinel" style="height:1px;flex-shrink:0;opacity:0;pointer-events:none;"></div>';
-  container.innerHTML = '<div class="msg-inner">'+html+'</div>';
-  function scrollDown() {
-    if (wasAtBottom || agentMsgs.length <= 2) {
-      container.scrollTop = container.scrollHeight;
-      unreadCount = 0;
-    } else {
-      unreadCount = countMessagesBelowViewport();
-    }
-    updateUnreadBadge();
-    setupUnreadObserver();
-  }
-  requestAnimationFrame(function() { requestAnimationFrame(scrollDown); });
-}
-
-var agentBusy = false;
-var pendingAgent = null;
-var activeAbortController = null;
-
-function setBusyUI(busy) {
-  agentBusy = busy;
-  document.getElementById('btnSend').style.display = busy ? 'none' : '';
-  document.getElementById('btnStop').style.display = busy ? '' : 'none';
-  document.getElementById('agentInput').disabled = busy;
-  document.getElementById('agentInput').style.opacity = busy ? '0.4' : '';
-}
-
-function stopAgentCall() {
-  if (activeAbortController) {
-    console.log('[Write] 用户终止Agent调用');
-    activeAbortController.abort();
-    activeAbortController = null;
-  }
-  pendingAgent = null; renderPendingAgent();
-  var stopMsg = { type:'system', content:'⏹ 已终止' };
-  agentMsgs.push(stopMsg); appendMsgToDOM(renderSingleMsg(stopMsg));
-  setBusyUI(false);
-}
-
-function sendAgentMessage() {
-  var inp = document.getElementById('agentInput');
-  var text = inp.value.trim();
-  if (!text || agentBusy) return;
-  inp.value = '';
-  setBusyUI(true);
-  console.log('[Write] 用户发送: '+text.substring(0,100));
-  unreadCount = 0; updateUnreadBadge();
-  var userMsg = { type:'chat', role:'user', content:text };
-  agentMsgs.push(userMsg);
-  appendMsgToDOM(renderSingleMsg(userMsg));
-  scrollToBottom();
-  // 调用LLM
-  pendingAgent = { agent:'orchestrator', label:getAgentName('orchestrator'), icon:getAgentIcon('orchestrator') }; renderPendingAgent();
-  var ac = new AbortController();
-  activeAbortController = ac;
-  var fetchOpts = { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body:JSON.stringify({ content:text }), signal:ac.signal };
-  fetch(API+'/writing-projects/'+projectId+'/llm-call', fetchOpts).then(function(r) { return r.json(); }).then(function(r) {
-    pendingAgent = null; renderPendingAgent();
-    activeAbortController = null;
-    if (r && r.content) {
-      var reply = { type:'chat', role:'assistant', agent:'orchestrator', content:r.content, thinking:r.thinking||'' };
-      agentMsgs.push(reply); appendMsgToDOM(renderSingleMsg(reply));
-      console.log('[Write] 主Agent回复长度='+r.content.length);
-    } else if (r && r.error) {
-      var em = { type:'system', content:'⚠️ '+r.error };
-      agentMsgs.push(em); appendMsgToDOM(renderSingleMsg(em));
-      console.error('[Write] LLM调用失败: '+r.error);
-    } else {
-      var em2 = { type:'system', content:'⚠️ 无响应，请重试' };
-      agentMsgs.push(em2); appendMsgToDOM(renderSingleMsg(em2));
-      console.error('[Write] LLM返回空');
-    }
-    scrollToBottomIfAtBottom();
-    setBusyUI(false);
-  }).catch(function(err) {
-    if (err && err.name === 'AbortError') { console.log('[Write] 调用已终止'); return; }
-    pendingAgent = null; renderPendingAgent();
-    activeAbortController = null;
-    var em3 = { type:'system', content:'⚠️ 网络错误: '+(err&&err.message||'未知') };
-    agentMsgs.push(em3); appendMsgToDOM(renderSingleMsg(em3));
-    console.error('[Write] LLM调用异常:',err);
-    setBusyUI(false);
-  });
-}
-
-// ==================== 初始化 ====================
-api('GET','/writing-projects').then(function(projects) {
-  var p = projects ? projects.find(function(x){return x.id===projectId;}) : null;
-  if (!p) { window.location.replace('/projects.html'); return; }
-  document.getElementById('chapTitle').textContent = p.title||'未命名写作';
-  writingData.title = p.title;
-});
-
-// 加载历史对话
-api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs) {
-  agentMsgs = [];
-  if (msgs && msgs.length) {
-    msgs.forEach(function(m) {
-      var meta = {};
-      try { meta = JSON.parse(m.metadata||'{}'); } catch(e) {}
-      agentMsgs.push({
-        type: meta.type||'chat', role: m.role, agent: m.agent_type,
-        content: m.content, thinking: m.thinking||''
-      });
-    });
-    console.log('[Write] 已加载 '+msgs.length+' 条历史对话, agentMsgs.length='+agentMsgs.length);
-  } else {
-    console.log('[Write] 该项目暂无历史对话');
-  }
-  renderAgentMessages();
-  requestAnimationFrame(function(){ requestAnimationFrame(function(){ var c=document.getElementById('agentMessages'); if(c){c.scrollTop=c.scrollHeight;unreadCount=0;updateUnreadBadge();} }); });
-}).catch(function(err) {
-  console.error('[Write] 加载历史对话失败:', err);
-  renderAgentMessages();
-});
-
-// ==================== 大纲树 ====================
-var volumes = [], chapters = [], activeChapterId = null;
-
-function loadOutline() {
-  console.log('[Write] 加载大纲树');
-  api('GET','/writing-projects/'+projectId+'/volumes').then(function(vols) {
-    volumes = vols || [];
-    api('GET','/writing-projects/'+projectId+'/chapters').then(function(chaps) {
-      chapters = chaps || [];
-      console.log('[Write] 大纲: '+volumes.length+'卷 '+chapters.length+'章');
-      renderOutlineTree();
-    });
-  });
-}
-
-function renderOutlineTree() {
-  var body = document.getElementById('treeBody');
-  var html = '';
-  volumes.forEach(function(v) {
-    var vChaps = chapters.filter(function(c){ return c.volume_id===v.id; });
-    html += '<div style="margin-bottom:8px;">';
-    html += '<div style="display:flex;align-items:center;padding:4px 6px;border-radius:4px;cursor:pointer;" onclick="toggleVolume(this)">';
-    html += '<span style="font-size:10px;margin-right:4px;">▶</span>';
-    html += '<span style="font-size:12px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+escHtml(v.title||'第'+v.volume_no+'卷')+'</span>';
-    html += '<button style="font-size:9px;padding:1px 4px;border-radius:3px;border:0.5px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;font-family:inherit;" onclick="event.stopPropagation();addChapter('+v.id+')" title="添加章">+章</button>';
-    html += '</div>';
-    html += '<div class="vol-chapters" style="padding-left:12px;">';
-    vChaps.forEach(function(c) {
-      var active = activeChapterId===c.id ? ' style="background:rgba(5,163,197,0.12);color:var(--accent);"' : '';
-      html += '<div'+active+' onclick="openChapter('+c.id+')" style="padding:3px 6px;border-radius:4px;cursor:pointer;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+escHtml(c.title||'第'+c.chapter_no+'章')+'</div>';
-    });
-    html += '</div></div>';
-  });
-  // 新建卷按钮
-  html += '<button onclick="addVolume()" style="width:100%;padding:6px;border-radius:6px;border:1px dashed var(--border);background:transparent;color:var(--text2);cursor:pointer;font-size:11px;font-family:inherit;margin-top:4px;">+ 新建卷</button>';
-  // 大纲生成按钮
-  html += '<button onclick="generateOutline()" id="btnGenOutline" style="width:100%;padding:6px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px;font-family:inherit;margin-top:4px;">🎬 生成大纲</button>';
-  body.innerHTML = html;
-}
-
-function toggleVolume(el) {
-  var arrow = el.querySelector('span');
-  var chaps = el.nextElementSibling;
-  if (chaps && chaps.classList.contains('vol-chapters')) {
-    var hidden = chaps.style.display==='none';
-    chaps.style.display = hidden ? 'block' : 'none';
-    arrow.textContent = hidden ? '▼' : '▶';
-  }
-}
-
-function addVolume() {
-  api('POST','/writing-projects/'+projectId+'/volumes', { title:'新卷' }).then(function(r) {
-    console.log('[Write] 新建卷 id='+(r&&r.id));
-    loadOutline();
-  });
-}
-
-function addChapter(volumeId) {
-  api('POST','/writing-projects/'+projectId+'/chapters', { volume_id:volumeId, title:'新章' }).then(function(r) {
-    console.log('[Write] 新建章 id='+(r&&r.id)+' vid='+volumeId);
-    loadOutline();
-  });
-}
-
-function openChapter(chapterId) {
-  console.log('[Write] 打开章 id='+chapterId);
-  activeChapterId = chapterId;
-  var ch = chapters.find(function(c){return c.id===chapterId;});
-  if (!ch) return;
-  document.getElementById('chapTitle').textContent = ch.title||'';
-  document.getElementById('editableContent').innerHTML = ch.content_text||'';
-  document.getElementById('editableContent').style.display = 'block';
-  document.getElementById('editorPlaceholder').style.display = 'none';
-  var wc = (ch.content_text||'').replace(/<[^>]*>/g,'').replace(/\s/g,'').length;
-  document.getElementById('wordCount').textContent = '字数: '+wc;
-  writingData.chapterId = chapterId;
-  renderOutlineTree();
-}
-
-function generateOutline() {
-  console.log('[Write] 触发大纲生成');
-  var uname = getAgentName('outliner');
-  subAgentStart('outliner', uname);
-  api('POST','/writing-projects/'+projectId+'/generate-outline').then(function(r) {
-    subAgentEnd('outliner', uname);
-    if (r && r.content) {
-      var outlineJson = null;
-      try { var clean = r.content.replace(/```json\s*|\s*```/g, '').trim(); outlineJson = JSON.parse(clean); } catch(e) {}
-      if (outlineJson && outlineJson['卷']) {
-        outlineJson['卷'].forEach(function(vol, vi) {
-          api('POST','/writing-projects/'+projectId+'/volumes', { title:vol['卷名']||('第'+(vi+1)+'卷') }).then(function(vr) {
-            if (vr && vr.id) { (vol['章']||[]).forEach(function(chap) { api('POST','/writing-projects/'+projectId+'/chapters', { volume_id:vr.id, title:chap['章名']||'' }); }); }
-          });
-        });
-        var omsg = { type:'chat', role:'assistant', agent:'outliner', content:r.content.substring(0, 500)+(r.content.length>500?'\n...(已截断)':''), thinking:'' };
-        agentMsgs.push(omsg); appendMsgToDOM(renderSingleMsg(omsg));
-        var okmsg = { type:'system', content:'✅ 大纲已生成，'+outlineJson['卷'].length+'卷' };
-        agentMsgs.push(okmsg); appendMsgToDOM(renderSingleMsg(okmsg));
-        setTimeout(function(){ loadOutline(); }, 1000);
-      } else {
-        var omsg2 = { type:'chat', role:'assistant', agent:'outliner', content:r.content, thinking:'' };
-        agentMsgs.push(omsg2); appendMsgToDOM(renderSingleMsg(omsg2));
-      }
-    } else {
-      var emsg = { type:'system', content:'⚠️ 大纲生成失败: '+(r&&r.error||'未知错误') };
-      agentMsgs.push(emsg); appendMsgToDOM(renderSingleMsg(emsg));
-    }
-  }).catch(function(err) {
-    subAgentEnd('outliner', uname);
-    var emsg2 = { type:'system', content:'⚠️ 大纲生成网络错误' };
-    agentMsgs.push(emsg2); appendMsgToDOM(renderSingleMsg(emsg2));
-    console.error('[Write] 大纲生成异常:',err);
-  });
-}
-
-// 初始化时加载大纲和Token
-loadOutline();
-loadTokenStats();
-
-// ==================== SSE 实时通知 ====================
-// ==================== 角色面板 ====================
-function switchAgentTab(tab) {
-  document.getElementById('tabChat').style.color = tab==='chat'?'var(--text)':'var(--text2)';
-  document.getElementById('tabChars').style.color = tab==='chars'?'var(--text)':'var(--text2)';
-  document.getElementById('panelChat').style.display = tab==='chat'?'flex':'none';
-  var cp = document.getElementById('panelChars');
-  cp.style.display = tab==='chars'?'flex':'none';
-  if (tab==='chars') loadCharacters();
-}
-
-function loadCharacters() {
-  console.log('[Write] 加载角色列表');
-  api('GET','/writing-projects/'+projectId+'/characters').then(function(chars) {
-    var list = document.getElementById('charList');
-    if (!chars || !chars.length) { list.innerHTML = '<div style="color:var(--text2);font-size:11px;text-align:center;padding:16px;">暂无角色，点击上方按钮生成</div>'; return; }
-    var html = '';
-    chars.forEach(function(c) {
-      var profile = {};
-      try { profile = JSON.parse(c.profile_json||'{}'); } catch(e) {}
-      var cnodes = [];
-      try { cnodes = JSON.parse(c.canvas_node_ids||'[]'); } catch(e) {}
-      html += '<div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:8px;font-size:11px;margin-bottom:4px;">';
-      html += '<div style="font-weight:600;margin-bottom:4px;">'+escHtml(c.name)+(c.aliases?' ('+escHtml(c.aliases)+')':'')+'</div>';
-      if (profile['外貌']) html += '<div style="color:var(--text2);font-size:10px;">'+escHtml(profile['外貌'].substring(0,60))+'...</div>';
-      if (cnodes.length) html += '<div style="font-size:9px;color:var(--accent);margin-top:2px;">🖼️ '+cnodes.length+'张立绘</div>';
-      html += '</div>';
-    });
-    list.innerHTML = html;
-  });
-}
-
-// ==================== 子Agent 独立调度 ====================
-function subAgentStart(agentId, agentName) {
-  var oname = getAgentName('orchestrator');
-  var inv = { type:'system', content:oname+' 邀请 '+agentName+' 进入群聊' };
-  agentMsgs.push(inv); appendMsgToDOM(renderSingleMsg(inv));
-  pendingAgent = { agent:agentId, label:agentName, icon:getAgentIcon(agentId) }; renderPendingAgent();
-}
-
-function subAgentEnd(agentId, agentName) {
-  pendingAgent = null; renderPendingAgent();
-  var leave = { type:'system', content:agentName+' 退出群聊' };
-  agentMsgs.push(leave); appendMsgToDOM(renderSingleMsg(leave));
-}
-
-function generateCharacters() {
-  console.log('[Write] 触发角色生成');
-  var cname = getAgentName('character');
-  subAgentStart('character', cname);
-  api('POST','/writing-projects/'+projectId+'/generate-characters').then(function(r) {
-    subAgentEnd('character', cname);
-    if (r && r.content) {
-      // 解析角色JSON
-      var charJson = null;
-      try { var clean = r.content.replace(/```json\s*|\s*```/g, '').trim(); charJson = JSON.parse(clean); } catch(e) {}
-      if (charJson && charJson['角色']) {
-        charJson['角色'].forEach(function(c) {
-          api('POST','/writing-projects/'+projectId+'/characters', { name:c['姓名']||c['姓名']||'未命名', profile_json:JSON.stringify(c) });
-        });
-        var cok = { type:'system', content:'✅ 已生成 '+charJson['角色'].length+' 个角色' };
-        agentMsgs.push(cok); appendMsgToDOM(renderSingleMsg(cok));
-        console.log('[Write] 角色生成成功 count='+charJson['角色'].length);
-      } else {
-        var cms = { type:'chat', role:'assistant', agent:'character', content:r.content, thinking:'' };
-        agentMsgs.push(cms); appendMsgToDOM(renderSingleMsg(cms));
-      }
-    }
-    try { document.getElementById('panelChars').style.display = 'flex'; loadCharacters(); } catch(e) {}
-  }).catch(function(err) {
-    console.error('[Write] 角色生成失败:',err);
-  });
-}
-
-// ==================== Token 面板 ====================
-function loadTokenStats() {
-  api('GET','/writing-projects/'+projectId+'/token-stats').then(function(stats) {
-    if (!stats) return;
-    document.getElementById('tokenToday').textContent = (stats.today||0).toLocaleString();
-    // 详细
-    var html = '今日'+stats.model+': '+stats.today.toLocaleString()+' tokens';
-    if (stats.cost) html += '<br>预估费用: ¥'+stats.cost.toFixed(2);
-    document.getElementById('tokenChart').textContent = html;
-    document.getElementById('tokenCost').textContent = '输入:¥'+stats.inputPrice+'/百万 | 输出:¥'+stats.outputPrice+'/百万';
-  });
-}
-
-// ==================== 侧边栏拖拽缩放 ====================
-var resizeVars = { active:null, startX:0, startW:0, startW2:0, minLeft:180, maxLeft:500, minRight:260, maxRight:600 };
-
-function initSidebarSizes() {
-  var leftW = parseInt(localStorage.getItem('write_left_width')) || 240;
-  var rightW = parseInt(localStorage.getItem('write_right_width')) || 360;
-  applySidebarSizes(leftW, rightW);
-}
-
-function applySidebarSizes(leftW, rightW) {
-  document.getElementById('projectTree').style.width = leftW+'px';
-  document.getElementById('agentPanel').style.width = rightW+'px';
-  document.getElementById('resizeLeft').style.left = leftW+'px';
-  document.getElementById('resizeRight').style.right = rightW+'px';
-  document.getElementById('editorArea').style.left = (leftW+5)+'px';
-  document.getElementById('editorArea').style.right = (rightW+5)+'px';
-  localStorage.setItem('write_left_width', leftW);
-  localStorage.setItem('write_right_width', rightW);
-}
-
-function startResize(e, handle) {
-  resizeVars.active = handle;
-  resizeVars.startX = e.clientX;
-  if (handle==='left') {
-    resizeVars.startW = parseInt(document.getElementById('projectTree').style.width)||240;
-  } else {
-    resizeVars.startW = parseInt(document.getElementById('agentPanel').style.width)||360;
-  }
-  document.getElementById(handle==='left'?'resizeLeft':'resizeRight').classList.add('dragging');
-  document.body.style.cursor = 'col-resize';
-  document.body.style.userSelect = 'none';
-  e.preventDefault();
-}
-
-document.getElementById('resizeLeft').addEventListener('mousedown', function(e) { startResize(e, 'left'); });
-document.getElementById('resizeRight').addEventListener('mousedown', function(e) { startResize(e, 'right'); });
-
-window.addEventListener('mousemove', function(e) {
-  if (!resizeVars.active) return;
-  var leftW = parseInt(document.getElementById('projectTree').style.width)||240;
-  var rightW = parseInt(document.getElementById('agentPanel').style.width)||360;
-  if (resizeVars.active === 'left') {
-    var nw = Math.max(resizeVars.minLeft, Math.min(resizeVars.maxLeft, resizeVars.startW + (e.clientX - resizeVars.startX)));
-    applySidebarSizes(nw, rightW);
-  } else {
-    var nw = Math.max(resizeVars.minRight, Math.min(resizeVars.maxRight, resizeVars.startW - (e.clientX - resizeVars.startX)));
-    applySidebarSizes(leftW, nw);
-  }
-});
-
-window.addEventListener('mouseup', function() {
-  if (!resizeVars.active) return;
-  document.getElementById('resizeLeft').classList.remove('dragging');
-  document.getElementById('resizeRight').classList.remove('dragging');
-  document.body.style.cursor = '';
-  document.body.style.userSelect = '';
-  resizeVars.active = null;
-});
-
-initSidebarSizes();
-
-// 滚动监听：跟踪阅读进度
-var _mc = document.getElementById('agentMessages');
-if (_mc) _mc.addEventListener('scroll', function() {
-  clearTimeout(_unreadScrollTimer);
-  _unreadScrollTimer = setTimeout(countAndUpdateUnread, 150);
-});
-
-// ==================== SSE-1: 互踢检测
-(function() {
-  var sse = new EventSource('/api/sse?token='+encodeURIComponent(token));
-  sse.addEventListener('message', function(e) {
-    try { var d = JSON.parse(e.data); if (d.type==='kicked') { localStorage.removeItem('canvas_token'); localStorage.removeItem('canvas_username'); window.location.replace('/login.html?reason=kicked'); } } catch(ex) {}
-  });
-  sse.onerror = function() { console.log('[Write] 踢出SSE断线，自动重连中...'); };
-})();
-
-// SSE-2: 写作Agent消息推送
-(function() {
-  var sseUrl = '/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);
-  var sse = new EventSource(sseUrl);
-  var reconnectTimer = null;
-  sse.addEventListener('message', function(e) {
-    try {
-      var d = JSON.parse(e.data);
-      if (d.type==='connected') { console.log('[Write] SSE已连接 projectId='+d.projectId); return; }
-      if (d.type==='agent-message' && d.msg) {
-        if (!agentBusy) {
-          var sseMsg = { type:'chat', role:'assistant', agent:d.msg.agent_type, content:d.msg.content, thinking:d.msg.thinking||'' };
-          agentMsgs.push(sseMsg);
-          appendMsgToDOM(renderSingleMsg(sseMsg));
-          scrollToBottomIfAtBottom();
-          console.log('[Write] SSE收到Agent消息: '+d.msg.agent_type);
-        }
-      }
-    } catch(ex) { console.error('[Write] SSE消息解析失败:',ex); }
-  });
-  sse.onerror = function() {
-    console.log('[Write] Agent SSE断线，3秒后重连...');
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(function() {
-      // EventSource会自动重连，这里做容错
-      console.log('[Write] SSE重连检查');
-    }, 3000);
-  };
-  // 保存引用供broadcast使用
-  window._writeSse = sse;
-})();
+var token=localStorage.getItem('canvas_token');if(!token)window.location.replace('/login.html');
+var ep=new URLSearchParams(location.search).get('pid');
+var projectId=ep?Math.round(parseInt(ep)/1114514):null;
+if(!projectId)window.location.replace('/projects.html');
+console.log('[Write] pid='+projectId);
+var API='/api';
+function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}};if(b)o.body=JSON.stringify(b);return fetch(API+p,o).then(function(r){if(r.status===401){return r.json().then(function(d){var k=d&&d.error&&d.error.indexOf('已在其他设备登录')>=0;localStorage.removeItem('canvas_token');localStorage.removeItem('canvas_username');window.location.replace('/login.html'+(k?'?reason=kicked':''));return Promise.reject();}).catch(function(){localStorage.removeItem('canvas_token');localStorage.removeItem('canvas_username');window.location.replace('/login.html');return Promise.reject();});}var ct=r.headers.get('content-type')||'';if(ct.indexOf('json')>=0)return r.json();return r.text().then(function(t){try{return JSON.parse(t);}catch(e){return null;}});});}
+function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function toast(m,t){var el=document.getElementById('_toast');if(!el){el=document.createElement('div');el.id='_toast';el.style.cssText='position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999;padding:8px 20px;border-radius:8px;font-size:13px;font-family:inherit;pointer-events:none;opacity:0;transition:opacity 0.3s;';document.body.appendChild(el);}el.textContent=m;el.style.background=t==='error'?'rgba(245,63,63,0.9)':t==='warn'?'rgba(245,166,35,0.9)':'rgba(0,180,100,0.9)';el.style.color='#fff';el.style.opacity='1';if(el._t)clearTimeout(el._t);el._t=setTimeout(function(){el.style.opacity='0';},2500);}
+function showPrompt(msg,dv,cb){var ov=document.createElement('div');ov.className='prompt-overlay';ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';ov.innerHTML='<div style=\"background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:380px;\"><div style=\"font-size:14px;margin-bottom:12px;color:#fff;\">'+escHtml(msg)+'</div><input id=\"_promptInp\" style=\"width:100%;padding:8px 12px;background:rgba(255,255,255,0.04);border:0.5px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:13px;font-family:inherit;outline:none;\" value=\"'+escHtml(dv||'')+'\"><div style=\"display:flex;gap:8px;justify-content:flex-end;margin-top:12px;\"><button style=\"padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;\" onclick=\"this.closest(\'.prompt-overlay\').remove()\">取消</button><button style=\"padding:8px 18px;border-radius:6px;border:none;background:#05A3C5;color:#fff;cursor:pointer;font-family:inherit;\" onclick=\"var v=document.getElementById(\'_promptInp\').value;var o2=this.closest(\'.prompt-overlay\');o2.remove();(_pCb||function(){})(v)\">确定</button></div></div>';document.body.appendChild(ov);window._pCb=cb;ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});}
 </script>
+<script src="write.js"></script>
 </body>
 </html>
