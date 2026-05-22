@@ -460,7 +460,6 @@ var TABDRAG = {
     TABDRAG.dragPaneId = paneId;
     TABDRAG.dragIdx = idx;
     tabEl.classList.add('dragging');
-    // 创建 ghost
     var ghost = document.createElement('div');
     ghost.className = 'drag-ghost';
     ghost.textContent = tabEl.textContent.replace(/✕/g,'').trim();
@@ -468,21 +467,20 @@ var TABDRAG = {
     TABDRAG.ghost = ghost;
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', tabId);
-    // 用透明图片覆盖默认拖拽图
     var img = new Image(); img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
     e.dataTransfer.setDragImage(img, 0, 0);
     requestAnimationFrame(function(){ TABDRAG._moveGhost(e.clientX, e.clientY); });
-    // 监听全局 drag 事件更新 ghost 位置
     document.addEventListener('dragover', TABDRAG._onGlobalDrag);
   },
 
   onEnd: function(e) {
     document.removeEventListener('dragover', TABDRAG._onGlobalDrag);
+    cleanupDragIndicators();
     var el = document.querySelector('.pane-tab.dragging');
     if (el) el.classList.remove('dragging');
     if (TABDRAG.ghost) { TABDRAG.ghost.remove(); TABDRAG.ghost = null; }
-    // 清理所有 drop 指示器
-    document.querySelectorAll('.drag-over').forEach(function(el){ el.classList.remove('drag-over'); });
+    var container = document.getElementById('paneContainer');
+    if (container) container.style.boxShadow = '';
     TABDRAG.dragTab = null;
     TABDRAG.dragPaneId = null;
     TABDRAG.dragIdx = -1;
@@ -490,37 +488,37 @@ var TABDRAG = {
 
   onTabBarOver: function(e, targetPane) {
     e.preventDefault();
-    // 高亮目标 tag bar 中的插入位置
+    cleanupDragIndicators();
     var tabsEl = targetPane.el.querySelector('.pane-tabs');
-    tabsEl.classList.add('drag-over-target');
-    // 找最近的 tab 位置插入
+    if (!tabsEl) return;
+    // 在目标标签栏中找插入位置
     var tabEls = tabsEl.querySelectorAll('.pane-tab:not(.dragging)');
     var insertIdx = tabEls.length;
     for (var i=0; i<tabEls.length; i++) {
       var rect = tabEls[i].getBoundingClientRect();
       if (e.clientX < rect.left + rect.width/2) { insertIdx = i; break; }
     }
+    // 高亮插入位置：给目标索引的标签加 drop-before 样式（生成间隙）
+    if (insertIdx < tabEls.length) {
+      tabEls[insertIdx].classList.add('drop-before');
+    }
     tabsEl.setAttribute('data-drop-idx', insertIdx);
   },
 
   onTabBarLeave: function(e) {
-    var related = e.relatedTarget;
-    if (related && related.closest('.pane-tabs')) return;
-    cleanupDragOver();
+    if (e.relatedTarget && e.relatedTarget.closest('.pane-tabs')) return;
+    cleanupDragIndicators();
   },
 
   onTabBarDrop: function(e, targetPane) {
-    cleanupDragOver();
+    cleanupDragIndicators();
     if (!TABDRAG.dragTab) return;
     var tabsEl = targetPane.el.querySelector('.pane-tabs');
     var insertIdx = parseInt(tabsEl.getAttribute('data-drop-idx')||'0');
     if (TABDRAG.dragPaneId === targetPane.id) {
-      // 同 pane 内排序
       PANE.reorderTab(targetPane.id, TABDRAG.dragIdx, insertIdx);
     } else {
-      // 跨 pane 移动
       PANE.moveTab(TABDRAG.dragPaneId, targetPane.id, TABDRAG.dragTab);
-      // TODO: 在 insertIdx 位置插入
     }
   },
 
@@ -562,8 +560,8 @@ var TABDRAG = {
   }
 };
 
-function cleanupDragOver() {
-  document.querySelectorAll('.drag-over-target').forEach(function(el){ el.classList.remove('drag-over-target'); });
+function cleanupDragIndicators() {
+  document.querySelectorAll('.drop-before').forEach(function(el){ el.classList.remove('drop-before'); });
 }
 
 // 容器级 drop 事件
