@@ -459,6 +459,7 @@ var TABDRAG = {
     TABDRAG.dragTab = tabId;
     TABDRAG.dragPaneId = paneId;
     TABDRAG.dragIdx = idx;
+    TABDRAG.ghostLockY = tabEl.closest('.pane-tabs').getBoundingClientRect().top + 6;
     tabEl.classList.add('dragging');
     var ghost = document.createElement('div');
     ghost.className = 'drag-ghost';
@@ -469,7 +470,7 @@ var TABDRAG = {
     e.dataTransfer.setData('text/plain', tabId);
     var img = new Image(); img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
     e.dataTransfer.setDragImage(img, 0, 0);
-    requestAnimationFrame(function(){ TABDRAG._moveGhost(e.clientX, e.clientY); });
+    requestAnimationFrame(function(){ TABDRAG._moveGhost(e.clientX); });
     document.addEventListener('dragover', TABDRAG._onGlobalDrag);
   },
 
@@ -484,6 +485,7 @@ var TABDRAG = {
     TABDRAG.dragTab = null;
     TABDRAG.dragPaneId = null;
     TABDRAG.dragIdx = -1;
+    TABDRAG.ghostLockY = 0;
   },
 
   onTabBarOver: function(e, targetPane) {
@@ -525,15 +527,15 @@ var TABDRAG = {
   },
 
   _onGlobalDrag: function(e) {
-    TABDRAG._moveGhost(e.clientX, e.clientY);
+    TABDRAG._moveGhost(e.clientX);
     // 检测是否在 pane 右边缘（触发分屏）
     TABDRAG._checkSplitEdge(e);
   },
 
-  _moveGhost: function(x, y) {
+  _moveGhost: function(x) {
     if (!TABDRAG.ghost) return;
     TABDRAG.ghost.style.left = (x+8)+'px';
-    TABDRAG.ghost.style.top = (y-16)+'px';
+    TABDRAG.ghost.style.top = TABDRAG.ghostLockY+'px';
   },
 
   // 预留给容器级 drop 使用
