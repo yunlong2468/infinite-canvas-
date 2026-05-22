@@ -1189,16 +1189,17 @@ function lastUserMsgIdx() {
 var pendingUndoMsgIdx = -1;
 
 var _ctxMenuScrollHide = null;
+var _ctxMenuOpenTime = 0;
 function showUserCtxMenu(e, msgIdx) {
   e.preventDefault(); e.stopPropagation();
   var chat = document.getElementById('subPanelChat');
-  // 锁死滚动位置：浏览器右键可能在任意环节触发 auto-scroll，直接暴力锁定
-  var savedScroll = chat ? chat.scrollTop : 0;
-  if (chat) { chat.style.overflow = 'hidden'; }
-  // 滚动聊天区时自动关闭菜单
+  if (chat) chat.style.userSelect = 'none';
+  _ctxMenuOpenTime = Date.now();
+  // 滚动聊天区时自动关闭菜单（忽略菜单打开后 150ms 内的 scroll，避免右键触发的抖动）
   function hideMenu() {
+    if (Date.now() - _ctxMenuOpenTime < 150) return;
     var m=document.getElementById('userCtxMenu'); m.classList.remove('show');
-    if (chat) { chat.style.overflow = ''; chat.scrollTop = savedScroll; }
+    restoreUserSelect();
   }
   if (!_ctxMenuScrollHide) {
     _ctxMenuScrollHide = hideMenu;
@@ -1225,12 +1226,12 @@ function showUserCtxMenu(e, msgIdx) {
   var my = Math.min(e.clientY, window.innerHeight - 120);
   menu.style.left = mx+'px';
   menu.style.top = my+'px';
-  setTimeout(function(){ document.addEventListener('click', function h(){ menu.classList.remove('show'); if(chat){chat.style.overflow='';chat.scrollTop=savedScroll;} document.removeEventListener('click',h); }); }, 0);
+  setTimeout(function(){ document.addEventListener('click', function h(){ menu.classList.remove('show'); restoreUserSelect(); document.removeEventListener('click',h); }); }, 0);
 }
 
 function restoreUserSelect() {
   var chat = document.getElementById('subPanelChat');
-  if (chat) { chat.style.overflow = ''; chat.style.userSelect = ''; }
+  if (chat) { chat.style.userSelect = ''; }
 }
 
 function copyUserMsg(msgIdx) {
