@@ -710,7 +710,8 @@ var SKILL = {
   create: function() {
     showPrompt('新建技能名称:', '', function(name) {
       if (!name||!name.trim()) return;
-      api('POST','/writing-projects/'+projectId+'/skills', { name_cn:name.trim() }).then(function() {
+      api('POST','/writing-projects/'+projectId+'/skills', { name_cn:name.trim(), content:'' }).then(function(r) {
+        if (r && r.error) { toast('创建失败: '+r.error, 'error'); return; }
         toast('技能已创建');
         SKILL.load();
       }).catch(function(e) { console.error('[Skill] 创建失败:', e); toast('创建失败: '+e.message, 'error'); });
@@ -725,7 +726,8 @@ var SKILL = {
   edit: function(sid) {
     showPrompt('编辑技能内容 (content):', '', function(content) {
       if (!content||!content.trim()) return;
-      api('PUT','/writing-projects/'+projectId+'/skills/'+sid, { content:content }).then(function() {
+      api('PUT','/writing-projects/'+projectId+'/skills/'+sid, { content:content }).then(function(r) {
+        if (r && r.error) { toast('更新失败: '+r.error, 'error'); return; }
         toast('技能已更新');
         SKILL.load();
       }).catch(function(e) { console.error('[Skill] 编辑失败:', e); toast('更新失败', 'error'); });
@@ -733,7 +735,8 @@ var SKILL = {
   },
   remove: function(sid) {
     if (!confirm('确定删除此技能吗？')) return;
-    api('DELETE','/writing-projects/'+projectId+'/skills/'+sid).then(function() {
+    api('DELETE','/writing-projects/'+projectId+'/skills/'+sid).then(function(r) {
+      if (r && r.error) { toast('删除失败: '+r.error, 'error'); return; }
       toast('技能已删除');
       SKILL.load();
     }).catch(function(e) { console.error('[Skill] 删除失败:', e); toast('删除失败', 'error'); });

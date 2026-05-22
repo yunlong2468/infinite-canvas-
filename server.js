@@ -1535,7 +1535,7 @@ app.get('/api/writing-projects/:id/skills', auth, (req, res) => {
 app.post('/api/writing-projects/:id/skills', auth, (req, res) => {
     try {
         var { name_cn, name_en, description, content, json_schema } = req.body;
-        if (!name_cn || !content) return res.status(400).json({ error: 'name_cn和content必填' });
+        if (!name_cn) return res.status(400).json({ error: 'name_cn必填' });
         var id = dbRun('INSERT INTO optimized_skills (user_id, name_cn, name_en, description, content, json_schema, is_enabled) VALUES (?,?,?,?,?,?,0)',
             [req.userId, name_cn, name_en||'', description||'', content, json_schema||'']);
         console.log('[Skill] 创建技能 id='+id+' name='+name_cn);
