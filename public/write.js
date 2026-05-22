@@ -1044,8 +1044,18 @@ function renderSingleMsg(m) {
   return h;
 }
 
+function ensureMsgInner() {
+  var el = document.getElementById('subPanelChat'); if (!el) return false;
+  if (!el.querySelector('.msg-inner')) {
+    el.innerHTML = '<div class="msg-inner"><div class="msg msg-sentinel" style="height:1px;flex-shrink:0;opacity:0;pointer-events:none;"></div></div>';
+    setupUnreadObserver();
+  }
+  return true;
+}
+
 function appendMsgToDOM(html) {
-  var inner=document.querySelector('#subPanelChat .msg-inner'); if(!inner)return;
+  if (!ensureMsgInner()) return;
+  var inner=document.querySelector('#subPanelChat .msg-inner');
   var sentinel=inner.querySelector('.msg-sentinel'), thinkingEl=inner.querySelector('.msg-thinking');
   if(thinkingEl)thinkingEl.remove();
   if(sentinel)sentinel.insertAdjacentHTML('beforebegin',html);
@@ -1053,7 +1063,8 @@ function appendMsgToDOM(html) {
 }
 
 function renderPendingAgent() {
-  var inner=document.querySelector('#subPanelChat .msg-inner'); if(!inner||!pendingAgent)return;
+  if (!ensureMsgInner() || !pendingAgent) return;
+  var inner=document.querySelector('#subPanelChat .msg-inner');
   var old=inner.querySelector('.msg-thinking'); if(old)old.remove();
   var pa=pendingAgent;
   var html='<div class="msg agent-msg msg-thinking"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div>⏳ 思考中...</div></div>';
