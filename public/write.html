@@ -777,65 +777,38 @@ function openChapter(chapterId) {
 }
 
 function generateOutline() {
-  if (agentBusy) { console.log('[Write] Agent忙碌中，拒绝生成大纲'); return; }
   console.log('[Write] 触发大纲生成');
-  agentBusy = true;
-  var oname = getAgentName('orchestrator'), uname = getAgentName('outliner');
-  var sysMsg = { type:'system', content:oname+' 邀请 '+uname+' 进入群聊' };
-  agentMsgs.push(sysMsg); appendMsgToDOM(renderSingleMsg(sysMsg));
-  pendingAgent = { agent:'outliner', label:getAgentName('outliner'), icon:getAgentIcon('outliner') }; renderPendingAgent();
+  var uname = getAgentName('outliner');
+  subAgentStart('outliner', uname);
   api('POST','/writing-projects/'+projectId+'/generate-outline').then(function(r) {
-    pendingAgent = null; renderPendingAgent();
+    subAgentEnd('outliner', uname);
     if (r && r.content) {
-      // 尝试解析JSON大纲
       var outlineJson = null;
-      try {
-        var clean = r.content.replace(/```json\s*|\s*```/g, '').trim();
-        outlineJson = JSON.parse(clean);
-      } catch(e) {
-        console.log('[Write] 大纲JSON解析失败，将原始文本存入对话');
-      }
+      try { var clean = r.content.replace(/```json\s*|\s*```/g, '').trim(); outlineJson = JSON.parse(clean); } catch(e) {}
       if (outlineJson && outlineJson['卷']) {
-        // 自动创建卷和章
-        var created = 0;
         outlineJson['卷'].forEach(function(vol, vi) {
           api('POST','/writing-projects/'+projectId+'/volumes', { title:vol['卷名']||('第'+(vi+1)+'卷') }).then(function(vr) {
-            if (vr && vr.id) {
-              (vol['章']||[]).forEach(function(chap) {
-                api('POST','/writing-projects/'+projectId+'/chapters', { volume_id:vr.id, title:chap['章名']||'' });
-                created++;
-              });
-            }
+            if (vr && vr.id) { (vol['章']||[]).forEach(function(chap) { api('POST','/writing-projects/'+projectId+'/chapters', { volume_id:vr.id, title:chap['章名']||'' }); }); }
           });
         });
-        var omsg = { type:'chat', role:'assistant', agent:'outliner', content:r.content.substring(0, 500)+(r.content.length>500?'\n...(已截断，完整内容已保存)':''), thinking:'' };
+        var omsg = { type:'chat', role:'assistant', agent:'outliner', content:r.content.substring(0, 500)+(r.content.length>500?'\n...(已截断)':''), thinking:'' };
         agentMsgs.push(omsg); appendMsgToDOM(renderSingleMsg(omsg));
-        var okmsg = { type:'system', content:'✅ 大纲已生成，'+outlineJson['卷'].length+'卷大纲已自动创建' };
-        var leavemsg = { type:'system', content:uname+' 退出群聊' };
+        var okmsg = { type:'system', content:'✅ 大纲已生成，'+outlineJson['卷'].length+'卷' };
         agentMsgs.push(okmsg); appendMsgToDOM(renderSingleMsg(okmsg));
-        agentMsgs.push(leavemsg); appendMsgToDOM(renderSingleMsg(leavemsg));
-        console.log('[Write] 大纲生成成功 volumes='+outlineJson['卷'].length);
         setTimeout(function(){ loadOutline(); }, 1000);
       } else {
         var omsg2 = { type:'chat', role:'assistant', agent:'outliner', content:r.content, thinking:'' };
         agentMsgs.push(omsg2); appendMsgToDOM(renderSingleMsg(omsg2));
-        console.log('[Write] 大纲非JSON格式，显示原始文本');
       }
     } else {
       var emsg = { type:'system', content:'⚠️ 大纲生成失败: '+(r&&r.error||'未知错误') };
-      var leavemsg2 = { type:'system', content:uname+' 退出群聊' };
       agentMsgs.push(emsg); appendMsgToDOM(renderSingleMsg(emsg));
-      agentMsgs.push(leavemsg2); appendMsgToDOM(renderSingleMsg(leavemsg2));
-      console.error('[Write] 大纲生成失败:',r);
     }
-    renderAgentMessages();
-    agentBusy = false;
   }).catch(function(err) {
-    pendingAgent = null; renderPendingAgent();
+    subAgentEnd('outliner', uname);
     var emsg2 = { type:'system', content:'⚠️ 大纲生成网络错误' };
     agentMsgs.push(emsg2); appendMsgToDOM(renderSingleMsg(emsg2));
     console.error('[Write] 大纲生成异常:',err);
-    agentBusy = false;
   });
 }
 
@@ -875,16 +848,26 @@ function loadCharacters() {
   });
 }
 
+// ==================== 子Agent 独立调度 ====================
+function subAgentStart(agentId, agentName) {
+  var oname = getAgentName('orchestrator');
+  var inv = { type:'system', content:oname+' 邀请 '+agentName+' 进入群聊' };
+  agentMsgs.push(inv); appendMsgToDOM(renderSingleMsg(inv));
+  pendingAgent = { agent:agentId, label:agentName, icon:getAgentIcon(agentId) }; renderPendingAgent();
+}
+
+function subAgentEnd(agentId, agentName) {
+  pendingAgent = null; renderPendingAgent();
+  var leave = { type:'system', content:agentName+' 退出群聊' };
+  agentMsgs.push(leave); appendMsgToDOM(renderSingleMsg(leave));
+}
+
 function generateCharacters() {
-  if (agentBusy) return;
   console.log('[Write] 触发角色生成');
-  agentBusy = true;
-  var oname2 = getAgentName('orchestrator'), cname = getAgentName('character');
-  var cmsg = { type:'system', content:oname2+' 邀请 '+cname+' 进入群聊' };
-  agentMsgs.push(cmsg); appendMsgToDOM(renderSingleMsg(cmsg));
-  pendingAgent = { agent:'character', label:getAgentName('character'), icon:getAgentIcon('character') }; renderPendingAgent();
+  var cname = getAgentName('character');
+  subAgentStart('character', cname);
   api('POST','/writing-projects/'+projectId+'/generate-characters').then(function(r) {
-    pendingAgent = null; renderPendingAgent();
+    subAgentEnd('character', cname);
     if (r && r.content) {
       // 解析角色JSON
       var charJson = null;
@@ -894,21 +877,16 @@ function generateCharacters() {
           api('POST','/writing-projects/'+projectId+'/characters', { name:c['姓名']||c['姓名']||'未命名', profile_json:JSON.stringify(c) });
         });
         var cok = { type:'system', content:'✅ 已生成 '+charJson['角色'].length+' 个角色' };
-        var cleave = { type:'system', content:cname+' 退出群聊' };
         agentMsgs.push(cok); appendMsgToDOM(renderSingleMsg(cok));
-        agentMsgs.push(cleave); appendMsgToDOM(renderSingleMsg(cleave));
         console.log('[Write] 角色生成成功 count='+charJson['角色'].length);
       } else {
         var cms = { type:'chat', role:'assistant', agent:'character', content:r.content, thinking:'' };
         agentMsgs.push(cms); appendMsgToDOM(renderSingleMsg(cms));
       }
     }
-    agentBusy = false;
     try { document.getElementById('panelChars').style.display = 'flex'; loadCharacters(); } catch(e) {}
-    renderAgentMessages();
   }).catch(function(err) {
     console.error('[Write] 角色生成失败:',err);
-    agentBusy = false;
   });
 }
 
