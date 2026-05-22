@@ -491,17 +491,19 @@ var TABDRAG = {
     cleanupDragIndicators();
     var tabsEl = targetPane.el.querySelector('.pane-tabs');
     if (!tabsEl) return;
-    // 在目标标签栏中找插入位置
+    // 在目标标签栏中找插入位置：鼠标在哪个标签的左半边就在它前面插入
     var tabEls = tabsEl.querySelectorAll('.pane-tab:not(.dragging)');
     var insertIdx = tabEls.length;
     for (var i=0; i<tabEls.length; i++) {
       var rect = tabEls[i].getBoundingClientRect();
       if (e.clientX < rect.left + rect.width/2) { insertIdx = i; break; }
     }
-    // 高亮插入位置：给目标索引的标签加 drop-before 样式（生成间隙）
-    if (insertIdx < tabEls.length) {
-      tabEls[insertIdx].classList.add('drop-before');
-    }
+    // 后续标签整体右移腾出空间（smooth gap）
+    var shiftW = (TABDRAG.dragPaneId===targetPane.id) ? 56 : 64;
+    tabEls.forEach(function(t, i) {
+      t.style.transition = 'transform 0.15s ease';
+      t.style.transform = (i >= insertIdx) ? 'translateX('+shiftW+'px)' : '';
+    });
     tabsEl.setAttribute('data-drop-idx', insertIdx);
   },
 
@@ -561,7 +563,9 @@ var TABDRAG = {
 };
 
 function cleanupDragIndicators() {
-  document.querySelectorAll('.drop-before').forEach(function(el){ el.classList.remove('drop-before'); });
+  document.querySelectorAll('.pane-tab').forEach(function(t) {
+    t.style.transform = ''; t.style.transition = '';
+  });
 }
 
 // 容器级 drop 事件
