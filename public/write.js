@@ -1190,11 +1190,17 @@ var pendingUndoMsgIdx = -1;
 
 var _ctxMenuScrollHide = null;
 function showUserCtxMenu(e, msgIdx) {
-  e.preventDefault(); e.stopPropagation();
+  e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+  // 临时禁用文字选中避免浏览器在右键时触发滚动
+  var chat = document.getElementById('subPanelChat');
+  if (chat) chat.style.userSelect = 'none';
   // 滚动聊天区时自动关闭菜单
+  function hideMenu() {
+    var m=document.getElementById('userCtxMenu'); m.classList.remove('show');
+    restoreUserSelect();
+  }
   if (!_ctxMenuScrollHide) {
-    _ctxMenuScrollHide = function() { var m=document.getElementById('userCtxMenu'); m.classList.remove('show'); };
-    var chat = document.getElementById('subPanelChat');
+    _ctxMenuScrollHide = hideMenu;
     if (chat) chat.addEventListener('scroll', _ctxMenuScrollHide);
   }
   var menu = document.getElementById('userCtxMenu');
@@ -1218,12 +1224,18 @@ function showUserCtxMenu(e, msgIdx) {
   var my = Math.min(e.clientY, window.innerHeight - 120);
   menu.style.left = mx+'px';
   menu.style.top = my+'px';
-  setTimeout(function(){ document.addEventListener('click', function h(){ menu.classList.remove('show'); document.removeEventListener('click',h); }); }, 0);
+  setTimeout(function(){ document.addEventListener('click', function h(){ menu.classList.remove('show'); restoreUserSelect(); document.removeEventListener('click',h); }); }, 0);
+}
+
+function restoreUserSelect() {
+  var chat = document.getElementById('subPanelChat');
+  if (chat) chat.style.userSelect = '';
 }
 
 function copyUserMsg(msgIdx) {
   var menu = document.getElementById('userCtxMenu');
   menu.classList.remove('show');
+  restoreUserSelect();
   if (msgIdx < 0 || msgIdx >= agentMsgs.length) return;
   var text = agentMsgs[msgIdx].content || '';
   navigator.clipboard.writeText(text).then(function() {
@@ -1236,6 +1248,7 @@ function copyUserMsg(msgIdx) {
 function editUserMsg(msgIdx) {
   var menu = document.getElementById('userCtxMenu');
   menu.classList.remove('show');
+  restoreUserSelect();
   if (msgIdx < 0 || msgIdx >= agentMsgs.length) return;
   var msg = agentMsgs[msgIdx];
   // 找到对应的气泡 DOM
@@ -1289,6 +1302,7 @@ function undoLastUserMsg() {
   var menu = document.getElementById('userCtxMenu');
   var msgIdx = parseInt(menu.getAttribute('data-msg-idx'));
   menu.classList.remove('show');
+  restoreUserSelect();
   if (isNaN(msgIdx) || msgIdx < 0 || msgIdx >= agentMsgs.length) { console.warn('[Undo] invalid msgIdx:', msgIdx); return; }
   if (agentMsgs[msgIdx].role !== 'user') { console.warn('[Undo] msgIdx not a user message'); return; }
   // 终止进行中的Agent调用，防止撤回后被SSE重新写入
