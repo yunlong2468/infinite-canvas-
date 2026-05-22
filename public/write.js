@@ -1190,14 +1190,15 @@ var pendingUndoMsgIdx = -1;
 
 var _ctxMenuScrollHide = null;
 function showUserCtxMenu(e, msgIdx) {
-  e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
-  // 临时禁用文字选中避免浏览器在右键时触发滚动
+  e.preventDefault(); e.stopPropagation();
   var chat = document.getElementById('subPanelChat');
-  if (chat) chat.style.userSelect = 'none';
+  // 锁死滚动位置：浏览器右键可能在任意环节触发 auto-scroll，直接暴力锁定
+  var savedScroll = chat ? chat.scrollTop : 0;
+  if (chat) { chat.style.overflow = 'hidden'; }
   // 滚动聊天区时自动关闭菜单
   function hideMenu() {
     var m=document.getElementById('userCtxMenu'); m.classList.remove('show');
-    restoreUserSelect();
+    if (chat) { chat.style.overflow = ''; chat.scrollTop = savedScroll; }
   }
   if (!_ctxMenuScrollHide) {
     _ctxMenuScrollHide = hideMenu;
@@ -1224,12 +1225,12 @@ function showUserCtxMenu(e, msgIdx) {
   var my = Math.min(e.clientY, window.innerHeight - 120);
   menu.style.left = mx+'px';
   menu.style.top = my+'px';
-  setTimeout(function(){ document.addEventListener('click', function h(){ menu.classList.remove('show'); restoreUserSelect(); document.removeEventListener('click',h); }); }, 0);
+  setTimeout(function(){ document.addEventListener('click', function h(){ menu.classList.remove('show'); if(chat){chat.style.overflow='';chat.scrollTop=savedScroll;} document.removeEventListener('click',h); }); }, 0);
 }
 
 function restoreUserSelect() {
   var chat = document.getElementById('subPanelChat');
-  if (chat) chat.style.userSelect = '';
+  if (chat) { chat.style.overflow = ''; chat.style.userSelect = ''; }
 }
 
 function copyUserMsg(msgIdx) {
