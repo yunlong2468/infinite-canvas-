@@ -319,6 +319,8 @@ var PANE = {
 
   loadLayout: function() {
     try {
+      paneContainer = document.getElementById('paneContainer');
+      if (!paneContainer) { console.error('[Pane] loadLayout: paneContainer not found'); return false; }
       var raw = localStorage.getItem('write_pane_layout_'+projectId);
       if (!raw) return false;
       var data = JSON.parse(raw);
@@ -1087,7 +1089,17 @@ var volumes=[], chapters=[], activeChapterId=null;
 
 function loadOutline() {
   console.log('[Write] 加载大纲树');
-  api('GET','/writing-projects/'+projectId+'/volumes').then(function(vols){volumes=vols||[];api('GET','/writing-projects/'+projectId+'/chapters').then(function(chaps){chapters=chaps||[];console.log('[Write] 大纲: '+volumes.length+'卷 '+chapters.length+'章');renderOutlineTree();});});
+  api('GET','/writing-projects/'+projectId+'/volumes').then(function(vols){volumes=vols||[];api('GET','/writing-projects/'+projectId+'/chapters').then(function(chaps){chapters=chaps||[];console.log('[Write] 大纲: '+volumes.length+'卷 '+chapters.length+'章');renderOutlineTree();refreshEditorTabs();});});
+}
+
+function refreshEditorTabs() {
+  paneGroups.forEach(function(p) {
+    p.tabs.forEach(function(t) {
+      if (t.type==='editor' && t.chapterId && t.id===p.activeTabId) {
+        PANE._renderContent(p, t);
+      }
+    });
+  });
 }
 
 function renderOutlineTree() {
