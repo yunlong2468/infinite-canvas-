@@ -1171,13 +1171,21 @@ function undoLastUserMsg() {
   menu.classList.remove('show');
   if (isNaN(msgIdx) || msgIdx < 0 || msgIdx >= agentMsgs.length) { console.warn('[Undo] invalid msgIdx:', msgIdx); return; }
   if (agentMsgs[msgIdx].role !== 'user') { console.warn('[Undo] msgIdx not a user message'); return; }
+  // 终止进行中的Agent调用，防止撤回后被SSE重新写入
+  if (activeAbortController) { activeAbortController.abort(); activeAbortController = null; }
+  agentBusy = false; pendingAgent = null;
+  setBusyUI(false);
   // 找到下一条用户消息的索引（或数组末尾）
   var endIdx = agentMsgs.length;
   for (var i = msgIdx + 1; i < agentMsgs.length; i++) {
     if (agentMsgs[i].role === 'user') { endIdx = i; break; }
   }
   var removed = agentMsgs.splice(msgIdx, endIdx - msgIdx);
-  console.log('[Undo] 撤回 msgIdx='+msgIdx+' count='+removed.length);
+  console.log('[Undo] 前端撤回 msgIdx='+msgIdx+' count='+removed.length);
+  // 同步后端
+  api('POST','/writing-projects/'+projectId+'/undo-last').then(function(r) {
+    console.log('[Undo] 后端撤回:', r);
+  }).catch(function(e) { console.error('[Undo] 后端撤回失败:', e); });
   renderAgentMessages();
   requestAnimationFrame(function(){ var c=document.getElementById('subPanelChat'); if(c)c.scrollTop=c.scrollHeight; });
 }

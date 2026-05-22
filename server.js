@@ -230,6 +230,19 @@ app.post('/api/writing-projects/:id/conversations', auth, (req, res) => {
     res.json({ id });
 });
 
+// POST 撤回最近的用户消息组（该用户消息及其后的所有agent消息）
+app.post('/api/writing-projects/:id/undo-last', auth, (req, res) => {
+    try {
+        var projectId = parseInt(req.params.id);
+        var lastUser = queryOne('SELECT id FROM agent_conversations WHERE project_id=? AND role=? ORDER BY id DESC LIMIT 1', [projectId, 'user']);
+        if (!lastUser) return res.json({ ok: true, deleted: 0 });
+        db.run('DELETE FROM agent_conversations WHERE project_id=? AND id>=?', [projectId, lastUser.id]);
+        saveDB();
+        console.log('[Undo] 项目 '+projectId+' 撤回消息组 from_id='+lastUser.id);
+        res.json({ ok: true, deleted: 1 });
+    } catch(e) { console.error('[Undo] error:', e); res.status(500).json({ error: e.message }); }
+});
+
 // ==================== Agent LLM 调用 ====================
 var ORCHESTRATOR_SYSTEM = '你是一个小说创作调配师，负责采访用户需求、协调下游写作智能体工作。\n\n'+
 '## 你的职责\n'+
