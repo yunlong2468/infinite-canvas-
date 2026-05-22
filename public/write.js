@@ -231,26 +231,33 @@ var PANE = {
 
   _renderContent: function(p, tab) {
     var content = p.el.querySelector('.pane-content');
-    // 显示对应 panel
     var panelId = 'panel_'+p.id+'_'+tab.type;
     var panel = content.querySelector('#'+panelId);
-    if (!panel) {
+    var isNew = !panel;
+    if (isNew) {
       panel = document.createElement('div');
       panel.id = panelId;
-      panel.className = 'panel active';
+      panel.className = 'panel';
       content.appendChild(panel);
     }
-    // 隐藏所有 panel，显示当前
+    // 切换激活状态
     content.querySelectorAll('.panel').forEach(function(pl){ pl.classList.remove('active'); });
     panel.classList.add('active');
-    // 渲染内容
-    switch(tab.type) {
-      case 'outline':    RENDER.outline(panel); break;
-      case 'chat':       RENDER.chat(panel); break;
-      case 'editor':     RENDER.editor(panel, tab); break;
-      case 'skillConfig': RENDER.skillConfig(panel); break;
-      case 'apiConfig':   RENDER.apiConfig(panel); break;
-      default: panel.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2);">未知面板类型: '+tab.type+'</div>';
+    // 只在首次渲染内容
+    if (isNew || tab.type==='editor') {
+      // 编辑器每次都刷新（章节内容可能已更新）
+      // 其他面板只渲染一次
+      if (tab.type==='editor' || !panel.getAttribute('data-rendered')) {
+        panel.setAttribute('data-rendered','1');
+        switch(tab.type) {
+          case 'outline':    RENDER.outline(panel); break;
+          case 'chat':       RENDER.chat(panel); break;
+          case 'editor':     RENDER.editor(panel, tab); break;
+          case 'skillConfig': RENDER.skillConfig(panel); break;
+          case 'apiConfig':   RENDER.apiConfig(panel); break;
+          default: panel.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2);">未知面板类型: '+tab.type+'</div>';
+        }
+      }
     }
   },
 
