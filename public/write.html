@@ -10,6 +10,7 @@
   --accent:#05A3C5; --danger:#F53F3F; --warn:#F5A623;
   --border:rgba(255,255,255,0.08); --radius:12px;
   --tab-h:44px; --act-w:48px;
+  color-scheme:dark;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
@@ -254,6 +255,14 @@ body.zen-mode #zenExit { display:block; }
   box-shadow:0 0 6px var(--accent);
 }
 .drop-zone.show { display:block; }
+
+/* ===== Native form controls in dark mode ===== */
+select, option {
+  background:var(--panel); color:var(--text);
+}
+select:focus option:checked {
+  background:rgba(5,163,197,0.2); color:var(--text);
+}
 
 /* ===== Mobile (<768px) ===== */
 @media (max-width:767px) {
