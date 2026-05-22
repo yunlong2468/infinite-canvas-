@@ -235,6 +235,7 @@ var PANE = {
     var panel = content.querySelector('#'+panelId);
     var isNew = !panel;
     console.log('[Pane] _renderContent pane='+p.id+' tab='+tab.id+' type='+tab.type+' isNew='+isNew);
+    if (tab.type==='apiConfig') console.trace('[Pane] _renderContent apiConfig CALL STACK:');
     if (isNew) {
       panel = document.createElement('div');
       panel.id = panelId;
