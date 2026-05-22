@@ -1044,15 +1044,42 @@ function fmtTime(ts) {
   return (d.getMonth()+1)+'-'+d.getDate()+' '+time;
 }
 
+function parseOptBtns(html, agentType) {
+  if (agentType !== 'orchestrator') return html;
+  var btns = [];
+  var cleaned = html.replace(/<br>- \[([^\]]+)\](<br>)?/g, function(_, text) {
+    btns.push(text); return '';
+  });
+  if (!btns.length) return html;
+  var btnHtml = '<div class="opt-btns">';
+  btns.forEach(function(t) {
+    btnHtml += '<button class="opt-btn" data-opt="'+escHtml(t)+'" onclick="event.stopPropagation();clickOption(this)">'+escHtml(t)+'</button>';
+  });
+  btnHtml += '</div>';
+  return cleaned + btnHtml;
+}
+
+function clickOption(btn) {
+  var text = btn.getAttribute('data-opt'); if (!text) return;
+  var btns = btn.parentElement.querySelectorAll('.opt-btn');
+  btns.forEach(function(b) {
+    if (b === btn) { b.classList.add('picked'); b.classList.remove('gone'); }
+    else b.classList.add('gone');
+  });
+  var inp = document.getElementById('agentInput');
+  if (inp) { inp.value = text; sendAgentMessage(); }
+}
+
 function renderSingleMsg(m) {
   var t = m.time ? '<div class="msg-time">'+fmtTime(m.time)+'</div>' : '';
   if(m.type==='system')return'<div class="msg system-msg"><span class="sys-text">'+escHtml(m.content)+'</span></div>';
-  if(m.role==='user')return'<div class="msg user-msg"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+t+'</div></div>';
+  if(m.role==='user')return'<div class="msg user-msg" oncontextmenu="event.preventDefault();showUserCtxMenu(event,'+agentMsgs.indexOf(m)+')"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+t+'</div></div>';
   var avatar=getAgentIcon(m.agent);
+  var contentHtml = parseOptBtns(formatAgentContent(m.content), m.agent);
   var h='<div class="msg agent-msg"><div class="avatar" style="font-size:16px;">'+avatar+'</div><div class="bubble">';
   h+='<div style="font-size:10px;color:var(--accent);margin-bottom:2px;cursor:pointer;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(m.agent||'agent')+'\')">'+escHtml(getAgentName(m.agent))+'</div>';
   if(m.thinking){h+='<span class="think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'">💭 思考过程</span>';h+='<div class="think-body">'+formatAgentContent(m.thinking)+'</div>';}
-  h+=formatAgentContent(m.content)+t+'</div></div>';
+  h+=contentHtml+t+'</div></div>';
   return h;
 }
 
@@ -1090,16 +1117,17 @@ function renderAgentMessages() {
   var wasAtBottom=container.scrollHeight-container.scrollTop-container.clientHeight<60;
   if(!agentMsgs.length){container.innerHTML='<div class="ap-loading">暂无对话记录<br><span style="font-size:10px;color:var(--text2);">在下方输入消息开始创作</span></div>';unreadCount=0;updateUnreadBadge();return;}
   var html='';
-  agentMsgs.forEach(function(m) {
+  agentMsgs.forEach(function(m, i) {
     var t = m.time ? '<div class="msg-time">'+fmtTime(m.time)+'</div>' : '';
     if(m.type==='system')html+='<div class="msg system-msg"><span class="sys-text">'+escHtml(m.content)+'</span></div>';
-    else if(m.role==='user')html+='<div class="msg user-msg"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+t+'</div></div>';
+    else if(m.role==='user')html+='<div class="msg user-msg" data-msg-idx="'+i+'" oncontextmenu="event.preventDefault();showUserCtxMenu(event,'+i+')"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+t+'</div></div>';
     else {
       var avatar=getAgentIcon(m.agent);
+      var contentHtml = parseOptBtns(formatAgentContent(m.content), m.agent);
       html+='<div class="msg agent-msg"><div class="avatar" style="font-size:16px;">'+avatar+'</div><div class="bubble">';
       html+='<div style="font-size:10px;color:var(--accent);margin-bottom:2px;cursor:pointer;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(m.agent||'agent')+'\')">'+escHtml(getAgentName(m.agent))+'</div>';
       if(m.thinking){html+='<span class="think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'">💭 思考过程</span>';html+='<div class="think-body">'+formatAgentContent(m.thinking)+'</div>';}
-      html+=formatAgentContent(m.content)+t+'</div></div>';
+      html+=contentHtml+t+'</div></div>';
     }
   });
   if(pendingAgent){var pa=pendingAgent;html+='<div class="msg agent-msg"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div><span class="typing-dots"><b></b><b></b><b></b></span></div></div>';}
@@ -1107,6 +1135,36 @@ function renderAgentMessages() {
   container.innerHTML='<div class="msg-inner">'+html+'</div>';
   function scrollDown(){if(wasAtBottom||agentMsgs.length<=2){container.scrollTop=container.scrollHeight;markAllRead();}else{lastReadMsgIndex=agentMsgs.length-1;unreadCount=0;updateUnreadBadge();}setupUnreadObserver();}
   requestAnimationFrame(function(){requestAnimationFrame(scrollDown);});
+}
+
+// ===== 撤回用户消息 =====
+var pendingUndoMsgIdx = -1;
+
+function showUserCtxMenu(e, msgIdx) {
+  e.preventDefault();
+  var menu = document.getElementById('userCtxMenu');
+  menu.setAttribute('data-msg-idx', msgIdx);
+  menu.classList.add('show');
+  menu.style.left = e.clientX+'px';
+  menu.style.top = e.clientY+'px';
+  setTimeout(function(){ document.addEventListener('click', function h(){ menu.classList.remove('show'); document.removeEventListener('click',h); }); }, 0);
+}
+
+function undoLastUserMsg() {
+  var menu = document.getElementById('userCtxMenu');
+  var msgIdx = parseInt(menu.getAttribute('data-msg-idx'));
+  menu.classList.remove('show');
+  if (isNaN(msgIdx) || msgIdx < 0 || msgIdx >= agentMsgs.length) { console.warn('[Undo] invalid msgIdx:', msgIdx); return; }
+  if (agentMsgs[msgIdx].role !== 'user') { console.warn('[Undo] msgIdx not a user message'); return; }
+  // 找到下一条用户消息的索引（或数组末尾）
+  var endIdx = agentMsgs.length;
+  for (var i = msgIdx + 1; i < agentMsgs.length; i++) {
+    if (agentMsgs[i].role === 'user') { endIdx = i; break; }
+  }
+  var removed = agentMsgs.splice(msgIdx, endIdx - msgIdx);
+  console.log('[Undo] 撤回 msgIdx='+msgIdx+' count='+removed.length);
+  renderAgentMessages();
+  requestAnimationFrame(function(){ var c=document.getElementById('subPanelChat'); if(c)c.scrollTop=c.scrollHeight; });
 }
 
 // ===== Agent 调用 =====

@@ -268,6 +268,36 @@ select:focus option:checked {
 .msg-time { font-size:9px; color:var(--text2); margin-top:3px; opacity:0.6; }
 .user-msg .msg-time { text-align:right; color:rgba(255,255,255,0.6); }
 
+/* ===== 消息时间 ===== */
+.msg-time { font-size:9px; color:var(--text2); margin-top:3px; opacity:0.6; }
+.user-msg .msg-time { text-align:right; color:rgba(255,255,255,0.6); }
+
+/* ===== 选项按钮 ===== */
+.opt-btns { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; user-select:none; }
+.opt-btn {
+  padding:4px 12px; border-radius:14px; border:0.5px solid var(--accent);
+  background:rgba(5,163,197,0.1); color:var(--accent); cursor:pointer;
+  font-size:11px; font-family:inherit; transition:all 0.12s; white-space:nowrap;
+}
+.opt-btn:hover { background:rgba(5,163,197,0.22); }
+.opt-btn:active { transform:scale(0.96); }
+.opt-btn.gone { opacity:0.3; pointer-events:none; border-color:var(--border); color:var(--text2); background:rgba(255,255,255,0.03); }
+.opt-btn.picked { opacity:1; background:var(--accent); color:#fff; pointer-events:none; }
+
+/* ===== 用户消息右键撤回 ===== */
+.msg.user-msg .bubble { position:relative; cursor:context-menu; }
+.msg.user-msg .bubble::after {
+  content:''; position:absolute; right:4px; bottom:2px; width:16px; height:16px;
+  opacity:0; transition:opacity 0.15s; border-radius:3px;
+}
+.msg.user-msg .bubble:hover::after { opacity:0.5; background:rgba(255,255,255,0.15); }
+#userCtxMenu {
+  position:fixed; display:none; background:var(--panel); border:0.5px solid var(--border);
+  border-radius:8px; padding:4px; z-index:999; min-width:120px; box-shadow:0 8px 24px rgba(0,0,0,0.6);
+}
+#userCtxMenu.show { display:block; }
+#userCtxMenu .ctx-item:hover { background:rgba(245,63,63,0.15); color:var(--danger); }
+
 /* ===== 思考冒泡动画 ===== */
 .typing-dots { display:inline-flex; align-items:center; gap:3px; padding:2px 0; vertical-align:middle; }
 .typing-dots b {
@@ -313,6 +343,11 @@ select:focus option:checked {
 
 <!-- Context Menu -->
 <div id="ctxMenu"></div>
+
+<!-- User Message Context Menu -->
+<div id="userCtxMenu">
+  <div class="ctx-item" onclick="undoLastUserMsg()">↩ 撤回</div>
+</div>
 
 <!-- Zen Mode Exit -->
 <button id="zenExit" onclick="ZEN.exit()">✕ 退出全屏</button>
