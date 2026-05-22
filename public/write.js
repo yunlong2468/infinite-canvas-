@@ -87,8 +87,7 @@ var PANE = {
     var tab = { id:tabDef.id||_tid(), type:tabDef.type||'editor', label:tabDef.label||'', icon:tabDef.icon||'', chapterId:tabDef.chapterId||null };
     p.tabs.push(tab);
     this.activateTab(paneId, tab.id);
-    this._renderPane(p);
-    this.saveLayout();
+    // activateTab already calls _renderPane + _renderContent + saveLayout
     ACT._updateBadges();
     return tab;
   },
@@ -97,6 +96,7 @@ var PANE = {
     var p = this._getPane(paneId); if (!p) return;
     var tab = p.tabs.find(function(t){ return t.id===tabId; });
     if (!tab) { console.warn('[Pane] Tab not found:', tabId); return; }
+    console.log('[Pane] activateTab pane='+paneId+' tab='+tabId+' type='+tab.type+' activeTabId was='+p.activeTabId);
     p.activeTabId = tabId;
     this._renderPane(p);
     this._renderContent(p, tab);
@@ -234,6 +234,7 @@ var PANE = {
     var panelId = 'panel_'+p.id+'_'+tab.type;
     var panel = content.querySelector('#'+panelId);
     var isNew = !panel;
+    console.log('[Pane] _renderContent pane='+p.id+' tab='+tab.id+' type='+tab.type+' isNew='+isNew);
     if (isNew) {
       panel = document.createElement('div');
       panel.id = panelId;
@@ -268,16 +269,17 @@ var PANE = {
       tabEl.addEventListener('dragstart', TABDRAG.onStart);
       tabEl.addEventListener('dragend', TABDRAG.onEnd);
     });
-    // Drop zone on tab bar
-    tabsEl.addEventListener('dragover', function(e) {
-      e.preventDefault();
-      TABDRAG.onTabBarOver(e, p);
-    });
-    tabsEl.addEventListener('dragleave', TABDRAG.onTabBarLeave);
-    tabsEl.addEventListener('drop', function(e) {
-      e.preventDefault();
-      TABDRAG.onTabBarDrop(e, p);
-    });
+    // 移除旧监听器防止累积
+    if (tabsEl._dragOverFn) tabsEl.removeEventListener('dragover', tabsEl._dragOverFn);
+    if (tabsEl._dragLeaveFn) tabsEl.removeEventListener('dragleave', tabsEl._dragLeaveFn);
+    if (tabsEl._dropFn) tabsEl.removeEventListener('drop', tabsEl._dropFn);
+    // 绑定新监听器
+    tabsEl._dragOverFn = function(e) { e.preventDefault(); TABDRAG.onTabBarOver(e, p); };
+    tabsEl._dragLeaveFn = TABDRAG.onTabBarLeave;
+    tabsEl._dropFn = function(e) { e.preventDefault(); TABDRAG.onTabBarDrop(e, p); };
+    tabsEl.addEventListener('dragover', tabsEl._dragOverFn);
+    tabsEl.addEventListener('dragleave', tabsEl._dragLeaveFn);
+    tabsEl.addEventListener('drop', tabsEl._dropFn);
   },
 
   _onSplitterDown: function(e) {
