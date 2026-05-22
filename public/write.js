@@ -1292,6 +1292,7 @@ function editUserMsg(msgIdx) {
       }
       api('POST','/writing-projects/'+projectId+'/undo-last').catch(function(){});
       renderAgentMessages();
+	      retriggerAgent(newText);
     });
   });
   // Esc 取消
@@ -1343,6 +1344,23 @@ function stopAgentCall() {
   var stopMsg={type:'system',content:'⏹ 已终止',time:Date.now()};
   agentMsgs.push(stopMsg);appendMsgToDOM(renderSingleMsg(stopMsg));
   setBusyUI(false);
+}
+
+function retriggerAgent(text) {
+  if (agentBusy) return;
+  setBusyUI(true);
+  markAllRead();
+  pendingAgent = {agent:'orchestrator',label:getAgentName('orchestrator'),icon:getAgentIcon('orchestrator')};
+  renderPendingAgent();
+  var ac = new AbortController(); activeAbortController = ac;
+  var fetchOpts = {method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({content:text}),signal:ac.signal};
+  fetch(API+'/writing-projects/'+projectId+'/llm-call',fetchOpts).then(function(r){return r.json();}).then(function(r){
+    pendingAgent=null;renderPendingAgent();activeAbortController=null;
+    if(r&&r.content){var reply={type:'chat',role:'assistant',agent:'orchestrator',content:r.content,thinking:r.thinking||'',time:Date.now()};agentMsgs.push(reply);appendMsgToDOM(renderSingleMsg(reply));console.log('[Write] 重发回复长度='+r.content.length);}
+    else if(r&&r.error){var em={type:'system',content:'⚠️ '+r.error,time:Date.now()};agentMsgs.push(em);appendMsgToDOM(renderSingleMsg(em));console.error('[Write] 重发失败: '+r.error);}
+    else{var em2={type:'system',content:'⚠️ 无响应，请重试',time:Date.now()};agentMsgs.push(em2);appendMsgToDOM(renderSingleMsg(em2));console.error('[Write] 重发返回空');}
+    scrollToBottomIfAtBottom();setBusyUI(false);
+  }).catch(function(err){if(err&&err.name==='AbortError'){console.log('[Write] 重发已终止');return;}pendingAgent=null;renderPendingAgent();activeAbortController=null;var em3={type:'system',content:'⚠️ 网络错误: '+(err&&err.message||'未知'),time:Date.now()};agentMsgs.push(em3);appendMsgToDOM(renderSingleMsg(em3));console.error('[Write] 重发异常:',err);setBusyUI(false);});
 }
 
 function sendAgentMessage() {
