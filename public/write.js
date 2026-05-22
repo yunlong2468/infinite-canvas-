@@ -1067,7 +1067,7 @@ function renderPendingAgent() {
   var inner=document.querySelector('#subPanelChat .msg-inner');
   var old=inner.querySelector('.msg-thinking'); if(old)old.remove();
   var pa=pendingAgent;
-  var html='<div class="msg agent-msg msg-thinking"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div>⏳ 思考中...</div></div>';
+  var html='<div class="msg agent-msg msg-thinking"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div><span class="typing-dots"><b></b><b></b><b></b></span></div></div>';
   var sentinel=inner.querySelector('.msg-sentinel');
   if(sentinel)sentinel.insertAdjacentHTML('beforebegin',html);
   else inner.insertAdjacentHTML('beforeend',html);
@@ -1089,7 +1089,7 @@ function renderAgentMessages() {
       html+=formatAgentContent(m.content)+'</div></div>';
     }
   });
-  if(pendingAgent){var pa=pendingAgent;html+='<div class="msg agent-msg"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div>⏳ 思考中...</div></div>';}
+  if(pendingAgent){var pa=pendingAgent;html+='<div class="msg agent-msg"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div><span class="typing-dots"><b></b><b></b><b></b></span></div></div>';}
   html+='<div class="msg msg-sentinel" style="height:1px;flex-shrink:0;opacity:0;pointer-events:none;"></div>';
   container.innerHTML='<div class="msg-inner">'+html+'</div>';
   function scrollDown(){if(wasAtBottom||agentMsgs.length<=2){container.scrollTop=container.scrollHeight;markAllRead();}else{lastReadMsgIndex=agentMsgs.length-1;unreadCount=0;updateUnreadBadge();}setupUnreadObserver();}
