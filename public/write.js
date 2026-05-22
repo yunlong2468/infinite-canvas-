@@ -68,6 +68,7 @@ var PANE = {
       this.addTab(np.id, { type:'outline' });
     }
     this.saveLayout();
+    ACT._updateBadges();
   },
 
   addTab: function(paneId, tabDef) {
@@ -88,6 +89,7 @@ var PANE = {
     this.activateTab(paneId, tab.id);
     this._renderPane(p);
     this.saveLayout();
+    ACT._updateBadges();
     return tab;
   },
 
@@ -119,9 +121,8 @@ var PANE = {
     }
     this._renderPane(p);
     this.saveLayout();
-  },
-
-  moveTab: function(fromPaneId, toPaneId, tabId) {
+    ACT._updateBadges();
+  }, function(fromPaneId, toPaneId, tabId) {
     var fp = this._getPane(fromPaneId); if (!fp) return;
     var tp = this._getPane(toPaneId); if (!tp) return;
     var idx = -1;
