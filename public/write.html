@@ -176,7 +176,8 @@ body { background:var(--bg); color:var(--text); font-family:'Inter','Segoe UI','
     <div class="ap-input">
       <div class="mention-dropdown" id="mentionDropdown"></div>
       <input type="text" id="agentInput" placeholder="输入消息或 @Agent..." onkeydown="handleInputKey(event)" oninput="handleMentionInput()">
-      <button onclick="sendAgentMessage()">发送</button>
+      <button id="btnSend" onclick="sendAgentMessage()">发送</button>
+      <button id="btnStop" onclick="stopAgentCall()" style="display:none;background:rgba(245,63,63,0.15)!important;color:#F53F3F!important;border:0.5px solid rgba(245,63,63,0.3)!important;">⏹ 停止</button>
     </div>
   </div>
   <!-- 角色面板 -->
@@ -596,15 +597,35 @@ function renderAgentMessages() {
 }
 
 var agentBusy = false;
-var pendingAgent = null; // { agent, label } — 正在等待某个Agent回复
+var pendingAgent = null;
+var activeAbortController = null;
+
+function setBusyUI(busy) {
+  agentBusy = busy;
+  document.getElementById('btnSend').style.display = busy ? 'none' : '';
+  document.getElementById('btnStop').style.display = busy ? '' : 'none';
+  document.getElementById('agentInput').disabled = busy;
+  document.getElementById('agentInput').style.opacity = busy ? '0.4' : '';
+}
+
+function stopAgentCall() {
+  if (activeAbortController) {
+    console.log('[Write] 用户终止Agent调用');
+    activeAbortController.abort();
+    activeAbortController = null;
+  }
+  pendingAgent = null; renderPendingAgent();
+  var stopMsg = { type:'system', content:'⏹ 已终止' };
+  agentMsgs.push(stopMsg); appendMsgToDOM(renderSingleMsg(stopMsg));
+  setBusyUI(false);
+}
 
 function sendAgentMessage() {
   var inp = document.getElementById('agentInput');
   var text = inp.value.trim();
   if (!text || agentBusy) return;
   inp.value = '';
-  inp.disabled = true;
-  agentBusy = true;
+  setBusyUI(true);
   console.log('[Write] 用户发送: '+text.substring(0,100));
   unreadCount = 0; updateUnreadBadge();
   var userMsg = { type:'chat', role:'user', content:text };
@@ -613,13 +634,16 @@ function sendAgentMessage() {
   scrollToBottom();
   // 调用LLM
   pendingAgent = { agent:'orchestrator', label:getAgentName('orchestrator'), icon:getAgentIcon('orchestrator') }; renderPendingAgent();
-  api('POST','/writing-projects/'+projectId+'/llm-call', { content:text }).then(function(r) {
+  var ac = new AbortController();
+  activeAbortController = ac;
+  var fetchOpts = { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body:JSON.stringify({ content:text }), signal:ac.signal };
+  fetch(API+'/writing-projects/'+projectId+'/llm-call', fetchOpts).then(function(r) { return r.json(); }).then(function(r) {
     pendingAgent = null; renderPendingAgent();
+    activeAbortController = null;
     if (r && r.content) {
       var reply = { type:'chat', role:'assistant', agent:'orchestrator', content:r.content, thinking:r.thinking||'' };
-      agentMsgs.push(reply);
-      appendMsgToDOM(renderSingleMsg(reply));
-      console.log('[Write] 主Agent回复长度='+r.content.length+' thinking='+(r.thinking?r.thinking.length:0));
+      agentMsgs.push(reply); appendMsgToDOM(renderSingleMsg(reply));
+      console.log('[Write] 主Agent回复长度='+r.content.length);
     } else if (r && r.error) {
       var em = { type:'system', content:'⚠️ '+r.error };
       agentMsgs.push(em); appendMsgToDOM(renderSingleMsg(em));
@@ -630,17 +654,15 @@ function sendAgentMessage() {
       console.error('[Write] LLM返回空');
     }
     scrollToBottomIfAtBottom();
-    agentBusy = false;
-    inp.disabled = false;
-    inp.focus();
+    setBusyUI(false);
   }).catch(function(err) {
+    if (err && err.name === 'AbortError') { console.log('[Write] 调用已终止'); return; }
     pendingAgent = null; renderPendingAgent();
+    activeAbortController = null;
     var em3 = { type:'system', content:'⚠️ 网络错误: '+(err&&err.message||'未知') };
     agentMsgs.push(em3); appendMsgToDOM(renderSingleMsg(em3));
     console.error('[Write] LLM调用异常:',err);
-    agentBusy = false;
-    inp.disabled = false;
-    inp.focus();
+    setBusyUI(false);
   });
 }
 
