@@ -361,6 +361,20 @@ function formatAgentContent(text) {
 var unreadCount = 0;
 var unreadObserver = null;
 
+function scrollToBottom() {
+  var c = document.getElementById('agentMessages');
+  if (c) { c.scrollTop = c.scrollHeight; unreadCount = 0; updateUnreadBadge(); }
+}
+
+function scrollToBottomIfAtBottom() {
+  var c = document.getElementById('agentMessages');
+  if (!c) return;
+  var atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 60;
+  if (atBottom) { c.scrollTop = c.scrollHeight; unreadCount = 0; }
+  else { unreadCount = countMessagesBelowViewport(); }
+  updateUnreadBadge();
+}
+
 function setupUnreadObserver() {
   var container = document.getElementById('agentMessages');
   if (!container) return;
@@ -427,6 +441,48 @@ function countAndUpdateUnread() {
   updateUnreadBadge();
 }
 
+// 追加单条消息到 DOM（不触发全量重绘，保留哨兵和滚动状态）
+function renderSingleMsg(m) {
+  if (m.type === 'system') return '<div class="msg system-msg"><span class="sys-text">'+escHtml(m.content)+'</span></div>';
+  if (m.role === 'user') return '<div class="msg user-msg"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+'</div></div>';
+  var avatar = m.agent==='orchestrator'?'🎭':m.agent==='outliner'?'📋':m.agent==='character'?'👥':m.agent==='crawler'?'🕷️':m.agent==='dialog'?'💬':m.agent==='reviewer'?'🔍':m.agent==='skill_optimizer'?'🧠':'🤖';
+  var h = '<div class="msg agent-msg"><div class="avatar" style="font-size:16px;">'+avatar+'</div><div class="bubble">';
+  h += '<div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(m.agent||'agent')+'</div>';
+  if (m.thinking) {
+    h += '<span class="think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'">💭 思考过程</span>';
+    h += '<div class="think-body">'+formatAgentContent(m.thinking)+'</div>';
+  }
+  h += formatAgentContent(m.content)+'</div></div>';
+  return h;
+}
+
+function appendMsgToDOM(html) {
+  var inner = document.querySelector('#agentMessages .msg-inner');
+  if (!inner) return;
+  var sentinel = inner.querySelector('.msg-sentinel');
+  // 移除旧的思考中占位
+  var thinkingEl = inner.querySelector('.msg-thinking');
+  if (thinkingEl) thinkingEl.remove();
+  if (sentinel) {
+    sentinel.insertAdjacentHTML('beforebegin', html);
+  } else {
+    inner.insertAdjacentHTML('beforeend', html);
+  }
+}
+
+function renderPendingAgent() {
+  var inner = document.querySelector('#agentMessages .msg-inner');
+  if (!inner) return;
+  var old = inner.querySelector('.msg-thinking');
+  if (old) old.remove();
+  if (!pendingAgent) return;
+  var pa = pendingAgent;
+  var html = '<div class="msg agent-msg msg-thinking"><div class="avatar" style="font-size:16px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:10px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div>⏳ 思考中...</div></div>';
+  var sentinel = inner.querySelector('.msg-sentinel');
+  if (sentinel) sentinel.insertAdjacentHTML('beforebegin', html);
+  else inner.insertAdjacentHTML('beforeend', html);
+}
+
 function renderAgentMessages() {
   var container = document.getElementById('agentMessages');
   if (!container) return;
@@ -485,31 +541,37 @@ function sendAgentMessage() {
   agentBusy = true;
   console.log('[Write] 用户发送: '+text.substring(0,100));
   unreadCount = 0; updateUnreadBadge();
-  agentMsgs.push({ type:'chat', role:'user', content:text });
-  renderAgentMessages();
+  var userMsg = { type:'chat', role:'user', content:text };
+  agentMsgs.push(userMsg);
+  appendMsgToDOM(renderSingleMsg(userMsg));
+  scrollToBottom();
   // 调用LLM
-  pendingAgent = { agent:'orchestrator', label:'主Agent', icon:'🎭' }; renderAgentMessages();
+  pendingAgent = { agent:'orchestrator', label:'主Agent', icon:'🎭' }; renderPendingAgent();
   api('POST','/writing-projects/'+projectId+'/llm-call', { content:text }).then(function(r) {
-    pendingAgent = null;
+    pendingAgent = null; renderPendingAgent();
     if (r && r.content) {
-      agentMsgs.push({ type:'chat', role:'assistant', agent:'orchestrator', content:r.content, thinking:r.thinking||'' });
+      var reply = { type:'chat', role:'assistant', agent:'orchestrator', content:r.content, thinking:r.thinking||'' };
+      agentMsgs.push(reply);
+      appendMsgToDOM(renderSingleMsg(reply));
       console.log('[Write] 主Agent回复长度='+r.content.length+' thinking='+(r.thinking?r.thinking.length:0));
     } else if (r && r.error) {
-      agentMsgs.push({ type:'system', content:'⚠️ '+r.error });
+      var em = { type:'system', content:'⚠️ '+r.error };
+      agentMsgs.push(em); appendMsgToDOM(renderSingleMsg(em));
       console.error('[Write] LLM调用失败: '+r.error);
     } else {
-      agentMsgs.push({ type:'system', content:'⚠️ 无响应，请重试' });
+      var em2 = { type:'system', content:'⚠️ 无响应，请重试' };
+      agentMsgs.push(em2); appendMsgToDOM(renderSingleMsg(em2));
       console.error('[Write] LLM返回空');
     }
-    renderAgentMessages();
+    scrollToBottomIfAtBottom();
     agentBusy = false;
     inp.disabled = false;
     inp.focus();
   }).catch(function(err) {
-    pendingAgent = null;
-    agentMsgs.push({ type:'system', content:'⚠️ 网络错误: '+(err&&err.message||'未知') });
+    pendingAgent = null; renderPendingAgent();
+    var em3 = { type:'system', content:'⚠️ 网络错误: '+(err&&err.message||'未知') };
+    agentMsgs.push(em3); appendMsgToDOM(renderSingleMsg(em3));
     console.error('[Write] LLM调用异常:',err);
-    renderAgentMessages();
     agentBusy = false;
     inp.disabled = false;
     inp.focus();
@@ -630,10 +692,11 @@ function generateOutline() {
   if (agentBusy) { console.log('[Write] Agent忙碌中，拒绝生成大纲'); return; }
   console.log('[Write] 触发大纲生成');
   agentBusy = true;
-  agentMsgs.push({ type:'system', content:'📋 大纲Agent 已启动，正在分析对话记录生成大纲...' });
-  pendingAgent = { agent:'outliner', label:'大纲Agent', icon:'📋' }; renderAgentMessages();
+  var sysMsg = { type:'system', content:'📋 大纲Agent 已启动，正在分析对话记录生成大纲...' };
+  agentMsgs.push(sysMsg); appendMsgToDOM(renderSingleMsg(sysMsg));
+  pendingAgent = { agent:'outliner', label:'大纲Agent', icon:'📋' }; renderPendingAgent();
   api('POST','/writing-projects/'+projectId+'/generate-outline').then(function(r) {
-    pendingAgent = null;
+    pendingAgent = null; renderPendingAgent();
     if (r && r.content) {
       // 尝试解析JSON大纲
       var outlineJson = null;
@@ -656,25 +719,29 @@ function generateOutline() {
             }
           });
         });
-        agentMsgs.push({ type:'chat', role:'assistant', agent:'outliner', content:r.content.substring(0, 500)+(r.content.length>500?'\n...(已截断，完整内容已保存)':''), thinking:'' });
-        agentMsgs.push({ type:'system', content:'✅ 大纲已生成，'+outlineJson['卷'].length+'卷大纲已自动创建，请查看左侧大纲树' });
+        var omsg = { type:'chat', role:'assistant', agent:'outliner', content:r.content.substring(0, 500)+(r.content.length>500?'\n...(已截断，完整内容已保存)':''), thinking:'' };
+        agentMsgs.push(omsg); appendMsgToDOM(renderSingleMsg(omsg));
+        var okmsg = { type:'system', content:'✅ 大纲已生成，'+outlineJson['卷'].length+'卷大纲已自动创建，请查看左侧大纲树' };
+        agentMsgs.push(okmsg); appendMsgToDOM(renderSingleMsg(okmsg));
         console.log('[Write] 大纲生成成功 volumes='+outlineJson['卷'].length);
         setTimeout(function(){ loadOutline(); }, 1000);
       } else {
-        agentMsgs.push({ type:'chat', role:'assistant', agent:'outliner', content:r.content, thinking:'' });
+        var omsg2 = { type:'chat', role:'assistant', agent:'outliner', content:r.content, thinking:'' };
+        agentMsgs.push(omsg2); appendMsgToDOM(renderSingleMsg(omsg2));
         console.log('[Write] 大纲非JSON格式，显示原始文本');
       }
     } else {
-      agentMsgs.push({ type:'system', content:'⚠️ 大纲生成失败: '+(r&&r.error||'未知错误') });
+      var emsg = { type:'system', content:'⚠️ 大纲生成失败: '+(r&&r.error||'未知错误') };
+      agentMsgs.push(emsg); appendMsgToDOM(renderSingleMsg(emsg));
       console.error('[Write] 大纲生成失败:',r);
     }
     renderAgentMessages();
     agentBusy = false;
   }).catch(function(err) {
-    pendingAgent = null;
-    agentMsgs.push({ type:'system', content:'⚠️ 大纲生成网络错误' });
+    pendingAgent = null; renderPendingAgent();
+    var emsg2 = { type:'system', content:'⚠️ 大纲生成网络错误' };
+    agentMsgs.push(emsg2); appendMsgToDOM(renderSingleMsg(emsg2));
     console.error('[Write] 大纲生成异常:',err);
-    renderAgentMessages();
     agentBusy = false;
   });
 }
@@ -719,9 +786,11 @@ function generateCharacters() {
   if (agentBusy) return;
   console.log('[Write] 触发角色生成');
   agentBusy = true;
-  agentMsgs.push({ type:'system', content:'👥 角色Agent 已启动，正在分析小说设计角色...' });
-  renderAgentMessages();
+  var cmsg = { type:'system', content:'👥 角色Agent 已启动，正在分析小说设计角色...' };
+  agentMsgs.push(cmsg); appendMsgToDOM(renderSingleMsg(cmsg));
+  pendingAgent = { agent:'character', label:'角色Agent', icon:'👥' }; renderPendingAgent();
   api('POST','/writing-projects/'+projectId+'/generate-characters').then(function(r) {
+    pendingAgent = null; renderPendingAgent();
     if (r && r.content) {
       // 解析角色JSON
       var charJson = null;
@@ -730,10 +799,12 @@ function generateCharacters() {
         charJson['角色'].forEach(function(c) {
           api('POST','/writing-projects/'+projectId+'/characters', { name:c['姓名']||c['姓名']||'未命名', profile_json:JSON.stringify(c) });
         });
-        agentMsgs.push({ type:'system', content:'✅ 已生成 '+charJson['角色'].length+' 个角色，请查看角色面板' });
+        var cok = { type:'system', content:'✅ 已生成 '+charJson['角色'].length+' 个角色，请查看角色面板' };
+        agentMsgs.push(cok); appendMsgToDOM(renderSingleMsg(cok));
         console.log('[Write] 角色生成成功 count='+charJson['角色'].length);
       } else {
-        agentMsgs.push({ type:'chat', role:'assistant', agent:'character', content:r.content, thinking:'' });
+        var cms = { type:'chat', role:'assistant', agent:'character', content:r.content, thinking:'' };
+        agentMsgs.push(cms); appendMsgToDOM(renderSingleMsg(cms));
       }
     }
     agentBusy = false;
@@ -845,10 +916,11 @@ if (_mc) _mc.addEventListener('scroll', function() {
       var d = JSON.parse(e.data);
       if (d.type==='connected') { console.log('[Write] SSE已连接 projectId='+d.projectId); return; }
       if (d.type==='agent-message' && d.msg) {
-        // 服务端推送的Agent消息
         if (!agentBusy) {
-          agentMsgs.push({ type:'chat', role:'assistant', agent:d.msg.agent_type, content:d.msg.content, thinking:d.msg.thinking||'' });
-          renderAgentMessages();
+          var sseMsg = { type:'chat', role:'assistant', agent:d.msg.agent_type, content:d.msg.content, thinking:d.msg.thinking||'' };
+          agentMsgs.push(sseMsg);
+          appendMsgToDOM(renderSingleMsg(sseMsg));
+          scrollToBottomIfAtBottom();
           console.log('[Write] SSE收到Agent消息: '+d.msg.agent_type);
         }
       }
