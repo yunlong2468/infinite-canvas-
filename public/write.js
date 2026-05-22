@@ -1044,19 +1044,25 @@ function fmtTime(ts) {
   return (d.getMonth()+1)+'-'+d.getDate()+' '+time;
 }
 
-function parseOptBtns(html, agentType) {
-  if (agentType !== 'orchestrator') return html;
+function parseOptBtns(rawText, agentType) {
+  if (agentType !== 'orchestrator') return {html:formatAgentContent(rawText), btns:''};
+  // 在原始文本层面按行解析 — 行匹配 "^ - [按钮文字] $"（前后允许空格）
+  var lines = rawText.split('\n');
   var btns = [];
-  var cleaned = html.replace(/<br>- \[([^\]]+)\](<br>)?/g, function(_, text) {
-    btns.push(text); return '';
-  });
-  if (!btns.length) return html;
+  var kept = [];
+  for (var i = 0; i < lines.length; i++) {
+    var m = lines[i].match(/^\s*-\s*\[([^\]]+)\]\s*$/);
+    if (m) { btns.push(m[1]); }
+    else { kept.push(lines[i]); }
+  }
+  var html = formatAgentContent(kept.join('\n'));
+  if (!btns.length) return {html:html, btns:''};
   var btnHtml = '<div class="opt-btns">';
   btns.forEach(function(t) {
     btnHtml += '<button class="opt-btn" data-opt="'+escHtml(t)+'" onclick="event.stopPropagation();clickOption(this)">'+escHtml(t)+'</button>';
   });
   btnHtml += '</div>';
-  return cleaned + btnHtml;
+  return {html:html, btns:btnHtml};
 }
 
 function clickOption(btn) {
@@ -1079,7 +1085,8 @@ function renderSingleMsg(m) {
     return'<div class="msg user-msg"'+ctx+'><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble">'+escHtml(m.content)+t+'</div></div>';
   }
   var avatar=getAgentIcon(m.agent);
-  var contentHtml = parseOptBtns(formatAgentContent(m.content), m.agent);
+  var parsed = parseOptBtns(m.content, m.agent);
+  var contentHtml = parsed.html + parsed.btns;
   var h='<div class="msg agent-msg"><div class="avatar" style="font-size:16px;">'+avatar+'</div><div class="bubble">';
   h+='<div style="font-size:10px;color:var(--accent);margin-bottom:2px;cursor:pointer;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(m.agent||'agent')+'\')">'+escHtml(getAgentName(m.agent))+'</div>';
   if(m.thinking){h+='<span class="think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'">💭 思考过程</span>';h+='<div class="think-body">'+formatAgentContent(m.thinking)+'</div>';}
@@ -1131,7 +1138,8 @@ function renderAgentMessages() {
     }
     else {
       var avatar=getAgentIcon(m.agent);
-      var contentHtml = parseOptBtns(formatAgentContent(m.content), m.agent);
+      var parsed = parseOptBtns(m.content, m.agent);
+  var contentHtml = parsed.html + parsed.btns;
       html+='<div class="msg agent-msg"><div class="avatar" style="font-size:16px;">'+avatar+'</div><div class="bubble">';
       html+='<div style="font-size:10px;color:var(--accent);margin-bottom:2px;cursor:pointer;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(m.agent||'agent')+'\')">'+escHtml(getAgentName(m.agent))+'</div>';
       if(m.thinking){html+='<span class="think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'">💭 思考过程</span>';html+='<div class="think-body">'+formatAgentContent(m.thinking)+'</div>';}
