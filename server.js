@@ -814,7 +814,7 @@ var OUTLINER_SYSTEM = '你是小说大纲生成专家。根据用户提供的小
 '- 每个关键事件应该有推进剧情的作用\n'+
 '- 章名可以简洁但不能空洞';
 
-function callOutlineLLM(projectId, userId, systemPrompt, userContent, agentType, callback, req) {
+function callOutlineLLM(projectId, userId, systemPrompt, userContent, agentType, req, callback) {
     var llmAgent = queryOne('SELECT * FROM agents WHERE user_id=? ORDER BY id LIMIT 1', [userId]);
     if (!llmAgent || !llmAgent.api_key) { callback({ error:'请先在智能体管理页面配置至少一个AI模型' }); return; }
     var agentConfig = queryOne('SELECT * FROM writing_agent_config WHERE project_id=? AND agent_type=?', [projectId, agentType]);
