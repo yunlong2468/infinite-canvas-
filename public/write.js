@@ -1353,6 +1353,7 @@ function undoLastUserMsg() {
 
 // ===== Agent 调用 =====
 var agentBusy=false, pendingAgent=null, activeAbortController=null;
+var streamMsgEl=null, streamThinkTimer=null, streamThinkSecs=0, streamFirstContent=false;
 
 function setBusyUI(busy) {
   agentBusy=busy;
@@ -1364,10 +1365,208 @@ function setBusyUI(busy) {
 
 function stopAgentCall() {
   if(activeAbortController){console.log('[Write] 用户终止Agent调用');activeAbortController.abort();activeAbortController=null;}
+  cleanupStreamingState();
+  var oldStream = document.querySelector('.msg-streaming');
+  if (oldStream) oldStream.remove();
   pendingAgent=null;renderPendingAgent();
   var stopMsg={type:'system',content:'⏹ 已终止',time:Date.now()};
   agentMsgs.push(stopMsg);appendMsgToDOM(renderSingleMsg(stopMsg));
   setBusyUI(false);
+}
+
+// ===== 流式消息渲染 =====
+function cleanupStreamingState() {
+  if (streamThinkTimer) { clearInterval(streamThinkTimer); streamThinkTimer = null; }
+  streamMsgEl = null; streamThinkSecs = 0; streamFirstContent = false;
+}
+
+function createStreamingBubble(agentType) {
+  ensureMsgInner();
+  var inner = document.querySelector('#subPanelChat .msg-inner');
+  var oldThink = inner.querySelector('.msg-thinking');
+  if (oldThink) oldThink.remove();
+  var oldStream = inner.querySelector('.msg-streaming');
+  if (oldStream) oldStream.remove();
+
+  var icon = getAgentIcon(agentType);
+  var name = getAgentName(agentType);
+  var html = '<div class="msg agent-msg msg-streaming">'
+    + '<div class="avatar" style="font-size:17px;">'+icon+'</div>'
+    + '<div class="bubble">'
+    + '<div style="font-size:11px;color:var(--accent);padding:4px;margin:-4px 0 -6px -4px;cursor:pointer;display:inline-block;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(agentType)+'\')">'+escHtml(name)+'</div>'
+    + '<span class="think-toggle stream-think-toggle" style="cursor:default;">'
+    + '💭 思考中... <span class="stream-timer">0s</span> '
+    + '<span class="typing-dots"><b></b><b></b><b></b></span>'
+    + '</span>'
+    + '<div class="think-body show stream-think-body" style="max-height:200px;overflow-y:auto;text-align:left;"></div>'
+    + '<div class="stream-content" style="display:none;"></div>'
+    + '</div></div>';
+  var sentinel = inner.querySelector('.msg-sentinel');
+  if (sentinel) sentinel.insertAdjacentHTML('beforebegin', html);
+  else inner.insertAdjacentHTML('beforeend', html);
+  streamMsgEl = inner.querySelector('.msg-streaming');
+  return streamMsgEl;
+}
+
+function startThinkingTimer() {
+  streamThinkSecs = 0;
+  updateThinkingTimerDisplay();
+  streamThinkTimer = setInterval(function() {
+    streamThinkSecs++;
+    updateThinkingTimerDisplay();
+  }, 1000);
+}
+
+function updateThinkingTimerDisplay() {
+  if (!streamMsgEl) return;
+  var timerEl = streamMsgEl.querySelector('.stream-timer');
+  if (timerEl) timerEl.textContent = streamThinkSecs + 's';
+}
+
+function finalizeThinkingTimer() {
+  if (streamThinkTimer) { clearInterval(streamThinkTimer); streamThinkTimer = null; }
+  if (!streamMsgEl) return;
+  var toggle = streamMsgEl.querySelector('.stream-think-toggle');
+  if (toggle) {
+    toggle.innerHTML = '💭 思考过程 (用时 '+streamThinkSecs+'s)';
+    toggle.style.cursor = 'pointer';
+    toggle.setAttribute('onclick', 'var b=this.nextElementSibling;b.classList.toggle(\'show\');this.innerHTML=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程 (用时 '+streamThinkSecs+'s)\'');
+  }
+  // 隐藏跳动圆点
+  var dots = streamMsgEl.querySelector('.typing-dots');
+  if (dots) dots.style.display = 'none';
+}
+
+function appendThinkingDelta(delta) {
+  if (!streamMsgEl) return;
+  var body = streamMsgEl.querySelector('.stream-think-body');
+  if (body) {
+    body.innerHTML += escHtml(delta);
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+function appendContentDelta(delta) {
+  if (!streamMsgEl) return;
+  if (!streamFirstContent) {
+    streamFirstContent = true;
+    finalizeThinkingTimer();
+    var contentEl = streamMsgEl.querySelector('.stream-content');
+    if (contentEl) contentEl.style.display = '';
+  }
+  var contentEl = streamMsgEl.querySelector('.stream-content');
+  if (contentEl) {
+    contentEl.innerHTML += escHtml(delta).replace(/\n/g, '<br>');
+    scrollToBottom();
+  }
+}
+
+function finalizeStreamingMsg(data) {
+  if (streamThinkTimer) { clearInterval(streamThinkTimer); streamThinkTimer = null; }
+  if (!streamMsgEl) return;
+
+  var content = data.content || '';
+  var thinking = data.thinking || '';
+
+  // 如果只有思考没有正文（异常情况），也要完成计时
+  if (thinking && !streamFirstContent) {
+    finalizeThinkingTimer();
+  }
+
+  // 构建最终消息对象
+  var msg = {
+    type: 'chat',
+    role: 'assistant',
+    agent: 'orchestrator',
+    content: content,
+    thinking: thinking,
+    time: Date.now()
+  };
+  agentMsgs.push(msg);
+
+  // 用正式渲染替换流式bubble
+  var finalHtml = renderSingleMsg(msg);
+  var streamEl = document.querySelector('.msg-streaming');
+  if (streamEl) {
+    streamEl.outerHTML = finalHtml;
+  }
+
+  streamMsgEl = null;
+  streamFirstContent = false;
+  console.log('[Write] 流式完成 回复长度='+content.length+' 思考长度='+thinking.length);
+}
+
+// ===== 流式SSE读取 =====
+async function doStreamingCall(text) {
+  var ac = new AbortController(); activeAbortController = ac;
+
+  try {
+    var resp = await fetch(API+'/writing-projects/'+projectId+'/llm-call', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer '+token },
+      body: JSON.stringify({ content: text, stream: true }),
+      signal: ac.signal
+    });
+
+    if (!resp.ok) {
+      var errText = await resp.text();
+      throw new Error('HTTP '+resp.status+': '+errText.substring(0, 200));
+    }
+
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    var hasStartedThinking = false;
+
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+
+      buf += decoder.decode(chunk.value, { stream: true });
+      var lines = buf.split('\n');
+      buf = lines.pop() || '';
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line || line.indexOf('data: ') !== 0) continue;
+        var raw = line.slice(6);
+        try {
+          var evt = JSON.parse(raw);
+          if (evt.type === 'thinking') {
+            if (!hasStartedThinking) { hasStartedThinking = true; startThinkingTimer(); }
+            appendThinkingDelta(evt.delta);
+          } else if (evt.type === 'content') {
+            appendContentDelta(evt.delta);
+          } else if (evt.type === 'done') {
+            finalizeStreamingMsg(evt);
+          } else if (evt.type === 'error') {
+            var errMsg = { type: 'system', content: '⚠️ '+evt.message, time: Date.now() };
+            agentMsgs.push(errMsg);
+            appendMsgToDOM(renderSingleMsg(errMsg));
+            cleanupStreamingState();
+          }
+        } catch(e) {}
+      }
+    }
+  } catch(err) {
+    if (err && err.name === 'AbortError') {
+      console.log('[Write] 流式调用已终止');
+      cleanupStreamingState();
+      return;
+    }
+    console.error('[Write] 流式调用异常:', err);
+    cleanupStreamingState();
+    var oldStream = document.querySelector('.msg-streaming');
+    if (oldStream) oldStream.remove();
+    var em = { type: 'system', content: '⚠️ 网络错误: '+(err&&err.message||'未知'), time: Date.now() };
+    agentMsgs.push(em);
+    appendMsgToDOM(renderSingleMsg(em));
+  } finally {
+    pendingAgent = null;
+    activeAbortController = null;
+    setBusyUI(false);
+    scrollToBottomIfAtBottom();
+  }
 }
 
 function retriggerUndoneText() {
@@ -1381,17 +1580,8 @@ function retriggerAgent(text) {
   if (agentBusy) return;
   setBusyUI(true);
   markAllRead();
-  pendingAgent = {agent:'orchestrator',label:getAgentName('orchestrator'),icon:getAgentIcon('orchestrator')};
-  renderPendingAgent();
-  var ac = new AbortController(); activeAbortController = ac;
-  var fetchOpts = {method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({content:text}),signal:ac.signal};
-  fetch(API+'/writing-projects/'+projectId+'/llm-call',fetchOpts).then(function(r){return r.json();}).then(function(r){
-    pendingAgent=null;renderPendingAgent();activeAbortController=null;
-    if(r&&r.content){var reply={type:'chat',role:'assistant',agent:'orchestrator',content:r.content,thinking:r.thinking||'',time:Date.now()};agentMsgs.push(reply);appendMsgToDOM(renderSingleMsg(reply));console.log('[Write] 重发回复长度='+r.content.length);}
-    else if(r&&r.error){var em={type:'system',content:'⚠️ '+r.error,time:Date.now()};agentMsgs.push(em);appendMsgToDOM(renderSingleMsg(em));console.error('[Write] 重发失败: '+r.error);}
-    else{var em2={type:'system',content:'⚠️ 无响应，请重试',time:Date.now()};agentMsgs.push(em2);appendMsgToDOM(renderSingleMsg(em2));console.error('[Write] 重发返回空');}
-    scrollToBottomIfAtBottom();setBusyUI(false);
-  }).catch(function(err){if(err&&err.name==='AbortError'){console.log('[Write] 重发已终止');return;}pendingAgent=null;renderPendingAgent();activeAbortController=null;var em3={type:'system',content:'⚠️ 网络错误: '+(err&&err.message||'未知'),time:Date.now()};agentMsgs.push(em3);appendMsgToDOM(renderSingleMsg(em3));console.error('[Write] 重发异常:',err);setBusyUI(false);});
+  createStreamingBubble('orchestrator');
+  doStreamingCall(text);
 }
 
 function sendAgentMessage() {
@@ -1410,16 +1600,8 @@ function sendAgentMessage() {
   var now = Date.now();
   var userMsg={type:'chat',role:'user',content:text,time:now};
   agentMsgs.push(userMsg); appendMsgToDOM(renderSingleMsg(userMsg)); scrollToBottom();
-  pendingAgent={agent:'orchestrator',label:getAgentName('orchestrator'),icon:getAgentIcon('orchestrator')};renderPendingAgent();
-  var ac=new AbortController(); activeAbortController=ac;
-  var fetchOpts={method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({content:text}),signal:ac.signal};
-  fetch(API+'/writing-projects/'+projectId+'/llm-call',fetchOpts).then(function(r){return r.json();}).then(function(r){
-    pendingAgent=null;renderPendingAgent();activeAbortController=null;
-    if(r&&r.content){var reply={type:'chat',role:'assistant',agent:'orchestrator',content:r.content,thinking:r.thinking||'',time:Date.now()};agentMsgs.push(reply);appendMsgToDOM(renderSingleMsg(reply));console.log('[Write] 主Agent回复长度='+r.content.length);}
-    else if(r&&r.error){var em={type:'system',content:'⚠️ '+r.error,time:Date.now()};agentMsgs.push(em);appendMsgToDOM(renderSingleMsg(em));console.error('[Write] LLM调用失败: '+r.error);}
-    else{var em2={type:'system',content:'⚠️ 无响应，请重试',time:Date.now()};agentMsgs.push(em2);appendMsgToDOM(renderSingleMsg(em2));console.error('[Write] LLM返回空');}
-    scrollToBottomIfAtBottom();setBusyUI(false);
-  }).catch(function(err){if(err&&err.name==='AbortError'){console.log('[Write] 调用已终止');return;}pendingAgent=null;renderPendingAgent();activeAbortController=null;var em3={type:'system',content:'⚠️ 网络错误: '+(err&&err.message||'未知'),time:Date.now()};agentMsgs.push(em3);appendMsgToDOM(renderSingleMsg(em3));console.error('[Write] LLM调用异常:',err);setBusyUI(false);});
+  createStreamingBubble('orchestrator');
+  doStreamingCall(text);
 }
 
 // ===== 子Agent调度 =====
