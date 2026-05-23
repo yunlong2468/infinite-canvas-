@@ -1690,6 +1690,8 @@ function retriggerUndoneText() {
 function retriggerAgent(text) {
   if (agentBusy) return;
   setBusyUI(true);
+  stopBufferPolling(); _bufActive = false;
+  cleanupStreamingState();
   markAllRead();
   createStreamingBubble('orchestrator');
   doStreamingCall(text);
@@ -1700,6 +1702,7 @@ function sendAgentMessage() {
   var text=inp.value.trim(); if(!text||agentBusy)return;
   inp.value=''; setBusyUI(true);
   stopBufferPolling(); _bufActive = false;
+  cleanupStreamingState(); // 清除上次缓冲轮询残留的计时器/累积变量
   // 标记所有撤回提示为已使用（重新编辑后链接失效）
   for (var i = agentMsgs.length-1; i >= 0; i--) {
     if (agentMsgs[i].type === 'undo_notice') { agentMsgs[i].used = true; }
