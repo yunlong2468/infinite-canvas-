@@ -1978,6 +1978,7 @@ function replaceAgentPlaceholders(text) {
 }
 
 function reloadHistoryFromDB() { console.log("[Reload] 从DB加载历史...");
+  if (!document.getElementById('subPanelChat')) { console.error("[Reload] subPanelChat不存在!"); }
   api('GET', '/writing-projects/'+projectId+'/conversations').then(function(msgs) {
     agentMsgs = [];
     var savedOpts = loadPickedOptions();
@@ -1992,7 +1993,7 @@ function reloadHistoryFromDB() { console.log("[Reload] 从DB加载历史...");
     }
     renderAgentMessages();
     scrollToBottom();
-  }).catch(function() {});
+  }).catch(function(e) { console.error("[Reload] API失败:", e); });
 }
 
 function stopBufferPolling() {
