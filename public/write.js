@@ -1830,7 +1830,7 @@ function pollStreamBuffer() {
       }
       return;
     }
-    if (agentBusy) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; }
+    if (agentBusy && !_bufActive) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; }
     _bufStartedAt = buf.startedAt || Date.now();
     var initBubble = !_bufActive;
     if (!_bufActive) {
