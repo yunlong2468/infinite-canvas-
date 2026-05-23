@@ -1729,15 +1729,14 @@ function sendAgentMessage() {
 function subAgentStart(agentId, agentName) {
   var oname=getAgentName('orchestrator'); var inv={type:'system',content:oname+' 邀请 '+agentName+' 进入群聊',time:Date.now()};
   agentMsgs.push(inv);
-  if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(inv));
   pendingAgent={agent:agentId,label:agentName,icon:getAgentIcon(agentId)};
-  if (ensureMsgInner()) renderPendingAgent();
+  renderAgentMessages();
 }
 function subAgentEnd(agentId, agentName) {
-  pendingAgent=null;if (ensureMsgInner()) renderPendingAgent();
+  pendingAgent=null;
   var leave={type:'system',content:agentName+' 退出群聊',time:Date.now()};
   agentMsgs.push(leave);
-  if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(leave));
+  renderAgentMessages();
 }
 
 // ==================== 大纲树 ====================
