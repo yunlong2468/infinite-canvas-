@@ -852,6 +852,7 @@ app.get('/api/write-sse', (req, res) => {
 
 // GET 流式磁盘缓冲（断线续传用）
 app.get('/api/writing-projects/:id/stream-buffer', auth, (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     var bufPath = streamBufferPath(req.params.id);
     if (fs.existsSync(bufPath)) {
         try { res.json(JSON.parse(fs.readFileSync(bufPath, 'utf-8'))); }

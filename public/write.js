@@ -1801,7 +1801,7 @@ function autoSave(){if(saveTimer)clearTimeout(saveTimer);saveTimer=setTimeout(fu
 var _bufPollTimer = null, _bufLastContent = '', _bufActive = false, _bufStartedAt = 0;
 
 function pollStreamBuffer() {
-  api('GET', '/writing-projects/'+projectId+'/stream-buffer').then(function(buf) {
+  api('GET', '/writing-projects/'+projectId+'/stream-buffer?_t='+Date.now()).then(function(buf) {
     if (!buf || (!buf.content && !buf.thinking)) {
       if (_bufActive) {
         _bufActive = false;
