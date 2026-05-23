@@ -1096,13 +1096,38 @@ function parseOptBtns(rawText, agentType, pickedOption) {
   return {html:html, btns:btnHtml};
 }
 
+// ===== 选项按钮持久化 =====
+function _optStoreKey() { return 'write_btn_opt_' + projectId; }
+
+function savePickedOption(agentContent, pickedOption) {
+  try {
+    var store = JSON.parse(localStorage.getItem(_optStoreKey()) || '{}');
+    store[agentContent] = pickedOption;
+    localStorage.setItem(_optStoreKey(), JSON.stringify(store));
+  } catch(e) {}
+}
+
+function loadPickedOptions() {
+  try { return JSON.parse(localStorage.getItem(_optStoreKey()) || '{}'); }
+  catch(e) { return {}; }
+}
+
+function clearPickedOptionsForContents(contents) {
+  try {
+    var store = JSON.parse(localStorage.getItem(_optStoreKey()) || '{}');
+    var changed = false;
+    contents.forEach(function(c) { if (store[c]) { delete store[c]; changed = true; } });
+    if (changed) localStorage.setItem(_optStoreKey(), JSON.stringify(store));
+  } catch(e) {}
+}
+
 function clickOption(btn) {
   var text = btn.getAttribute('data-opt'); if (!text) return;
   // 标记对应消息数据中的已选选项（持久化，刷新后状态保留）
   var msgEl = btn.closest('.msg');
   if (msgEl) {
     var mi = parseInt(msgEl.getAttribute('data-msg-idx'));
-    if (!isNaN(mi) && agentMsgs[mi]) { agentMsgs[mi].pickedOption = text; }
+    if (!isNaN(mi) && agentMsgs[mi]) { agentMsgs[mi].pickedOption = text; savePickedOption(agentMsgs[mi].content, text); }
   }
   var btns = btn.parentElement.querySelectorAll('.opt-btn');
   btns.forEach(function(b) {
@@ -1340,6 +1365,9 @@ function undoLastUserMsg() {
     if (agentMsgs[i].role === 'user') { endIdx = i; break; }
   }
   var removed = agentMsgs.splice(msgIdx, endIdx - msgIdx);
+  // 清理被删除的智能体消息对应的选项状态，撤回后用户可重新选择
+  var removedOptContents = removed.filter(function(m){ return m.role==='assistant' && m.agent==='orchestrator' && m.pickedOption; }).map(function(m){ return m.content; });
+  if (removedOptContents.length) clearPickedOptionsForContents(removedOptContents);
   console.log('[Undo] 前端撤回 msgIdx='+msgIdx+' count='+removed.length);
   // 插入撤回提示
   agentMsgs.splice(msgIdx, 0, { type:'undo_notice', content:undoneText, time:Date.now() });
@@ -1768,7 +1796,7 @@ function autoSave(){if(saveTimer)clearTimeout(saveTimer);saveTimer=setTimeout(fu
 api('GET','/writing-projects').then(function(projects){var p=projects?projects.find(function(x){return x.id===projectId;}):null;if(!p){window.location.replace('/projects.html');return;}writingData.title=p.title;});
 
 // 加载历史对话
-api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs){agentMsgs=[];if(msgs&&msgs.length){msgs.forEach(function(m){var meta={};try{meta=JSON.parse(m.metadata||'{}');}catch(e){}agentMsgs.push({type:meta.type,time:Date.parse(m.created_at||Date.now())||'chat',role:m.role,agent:m.agent_type,content:m.content,thinking:m.thinking||''});});console.log('[Write] 已加载 '+msgs.length+' 条历史对话');}else{console.log('[Write] 该项目暂无历史对话');}renderAgentMessages();requestAnimationFrame(function(){requestAnimationFrame(function(){var c=document.getElementById('subPanelChat');if(c){c.scrollTop=c.scrollHeight;markAllRead();}});});}).catch(function(err){console.error('[Write] 加载历史对话失败:',err);renderAgentMessages();});
+api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs){agentMsgs=[];var savedOpts=loadPickedOptions();if(msgs&&msgs.length){msgs.forEach(function(m){var meta={};try{meta=JSON.parse(m.metadata||'{}');}catch(e){}var msg={type:meta.type,time:Date.parse(m.created_at||Date.now())||'chat',role:m.role,agent:m.agent_type,content:m.content,thinking:m.thinking||''};if(m.agent_type==='orchestrator'&&savedOpts[m.content]){msg.pickedOption=savedOpts[m.content];}agentMsgs.push(msg);});console.log('[Write] 已加载 '+msgs.length+' 条历史对话');}else{console.log('[Write] 该项目暂无历史对话');}renderAgentMessages();requestAnimationFrame(function(){requestAnimationFrame(function(){var c=document.getElementById('subPanelChat');if(c){c.scrollTop=c.scrollHeight;markAllRead();}});});}).catch(function(err){console.error('[Write] 加载历史对话失败:',err);renderAgentMessages();});
 
 loadOutline(); loadTokenStats();
 
