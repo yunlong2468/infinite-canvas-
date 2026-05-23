@@ -469,15 +469,13 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                 }
             } else {
                 // 无工具调用 → 这是最终回复，用流式输出
-                console.log('[Write LLM] 无工具调用，进入流式输出');
-                var finalContent = toolMsg.content || '';
+                console.log('[Write LLM] 无工具调用，进入流式输出 contentLen='+(toolMsg.content?toolMsg.content.length:0)+' thinkingLen='+(toolMsg.reasoning_content?toolMsg.reasoning_content.length:0));
+                var finalContent = toolMsg.content || '（工具调用已完成）';
                 var finalThinking = toolMsg.reasoning_content || '';
                 msgs.push({ role:'assistant', content:finalContent });
-                // 直接发送done（工具调用后的最终回复用非流式，因为已经拿到了完整内容）
-                if (finalContent || finalThinking) {
-                    dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, thinking, token_used) VALUES (?,?,?,?,?,?)', [projectId, 'orchestrator', 'assistant', finalContent, finalThinking, (toolData.usage?toolData.usage.total_tokens:0)]);
-                    saveDB();
-                }
+                // 直接发送done（工具调用后的最终回复用非流式）
+                dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, thinking, token_used) VALUES (?,?,?,?,?,?)', [projectId, 'orchestrator', 'assistant', finalContent, finalThinking, (toolData.usage?toolData.usage.total_tokens:0)]);
+                saveDB();
                 clearStreamBuffer(projectId);
                 res.write('data: '+JSON.stringify({type:'done',content:finalContent,thinking:finalThinking})+'\n\n');
                 res.end();
