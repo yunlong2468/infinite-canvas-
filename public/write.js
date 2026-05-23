@@ -1117,7 +1117,8 @@ function renderSingleMsg(m) {
   var t = m.time ? '<div class="msg-time">'+fmtTime(m.time)+'</div>' : '';
   if(m.type==='undo_notice'){
     window._undoneText = m.content || '';
-    return'<div class="msg system-msg"><span class="sys-text">你撤回了一条消息，<a style="color:var(--accent);text-decoration:underline;cursor:pointer;" onclick="event.stopPropagation();retriggerUndoneText()">重新编辑</a></span></div>';
+    if (m.used) return'<div class="msg system-msg"><span class="sys-text">你撤回了一条消息</span></div>';
+    return'<div class="msg system-msg"><span class="sys-text">你撤回了一条消息，<a class="undo-notice-link" style="color:var(--accent);text-decoration:underline;cursor:pointer;" onclick="event.stopPropagation();retriggerUndoneText()">重新编辑</a></span></div>';
   }
   if(m.type==='system')return'<div class="msg system-msg"><span class="sys-text">'+escHtml(m.content)+'</span></div>';
   if(m.role==='user'){
@@ -1173,7 +1174,8 @@ function renderAgentMessages() {
     var t = m.time ? '<div class="msg-time">'+fmtTime(m.time)+'</div>' : '';
     if(m.type==='undo_notice'){
       window._undoneText = m.content || '';
-      html+='<div class="msg system-msg"><span class="sys-text">你撤回了一条消息，<a style="color:var(--accent);text-decoration:underline;cursor:pointer;" onclick="event.stopPropagation();retriggerUndoneText()">重新编辑</a></span></div>';
+      if (m.used) { html+='<div class="msg system-msg"><span class="sys-text">你撤回了一条消息</span></div>'; }
+      else { html+='<div class="msg system-msg"><span class="sys-text">你撤回了一条消息，<a class="undo-notice-link" style="color:var(--accent);text-decoration:underline;cursor:pointer;" onclick="event.stopPropagation();retriggerUndoneText()">重新编辑</a></span></div>'; }
     }
     else if(m.type==='system')html+='<div class="msg system-msg"><span class="sys-text">'+escHtml(m.content)+'</span></div>';
     else if(m.role==='user'){
@@ -1396,6 +1398,13 @@ function sendAgentMessage() {
   var inp=document.getElementById('agentInput'); if(!inp)return;
   var text=inp.value.trim(); if(!text||agentBusy)return;
   inp.value=''; setBusyUI(true);
+  // 标记所有撤回提示为已使用（重新编辑后链接失效）
+  for (var i = agentMsgs.length-1; i >= 0; i--) {
+    if (agentMsgs[i].type === 'undo_notice') { agentMsgs[i].used = true; }
+  }
+  // 同步更新 DOM 中已有的撤回提示
+  var notices = document.querySelectorAll('.undo-notice-link');
+  for (var j = 0; j < notices.length; j++) { notices[j].remove(); }
   console.log('[Write] 用户发送: '+text.substring(0,100));
   markAllRead();
   var now = Date.now();
