@@ -819,7 +819,6 @@ function callOutlineLLM(projectId, userId, systemPrompt, userContent, agentType,
     var model = (agentConfig && agentConfig.model_name) || llmAgent.model || 'deepseek-v4-pro';
     var reqBody = { model:model, messages:[{ role:'system', content:systemPrompt },{ role:'user', content:userContent }], temperature:0.6, stream:false };
     console.log('[Writing '+agentType+'] 调用 model='+model+' prompt长度='+userContent.length);
-    dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)', [projectId, agentType, 'user', userContent]);
     var checkAbort = req || {};
     fetch(llmAgent.api_endpoint, {
         method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+llmAgent.api_key},
