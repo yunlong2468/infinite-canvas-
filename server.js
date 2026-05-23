@@ -344,16 +344,23 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 
         var streamReqBody = { model:model, messages:msgs, stream:true, temperature:0.7 };
 
+        // 调试：先打印完整请求体（截断过长内容）
+        var debugBody = JSON.parse(JSON.stringify(streamReqBody));
+        debugBody.messages = debugBody.messages.map(function(m){ return {role:m.role,content:(m.content||'').substring(0,50)}; });
+        console.log('[Write LLM] 请求体:', JSON.stringify(debugBody).substring(0,300));
         console.log('[Write LLM] 流式调用 model='+model+' 消息数='+msgs.length+' endpoint='+endpoint.substring(0,40)+'...');
 
         try {
+            var fetchStart = Date.now();
             var llmResp = await fetch(endpoint, {
                 method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
                 body:JSON.stringify(streamReqBody)
             });
+            console.log('[Write LLM] fetch耗时='+(Date.now()-fetchStart)+'ms status='+llmResp.status);
 
             if (!llmResp.ok) {
                 var errTxt = await llmResp.text();
+                console.log('[Write LLM] 错误响应体:', errTxt.substring(0,300));
                 res.write('data: '+JSON.stringify({type:'error',message:'API错误 '+llmResp.status+': '+errTxt.substring(0,200)})+'\n\n');
                 res.end();
                 return;
@@ -373,8 +380,11 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                 try { res.write('data: {"type":"waiting"}\n\n'); } catch(e) { clearInterval(heartbeat); }
             }, 10000);
 
+            console.log('[Write LLM] 进入读循环 req.aborted='+req.aborted+' req.destroyed='+req.destroyed);
             while (true) {
+                var readStart = Date.now();
                 var chunk = await reader.read();
+                console.log('[Write LLM] reader.read耗时='+(Date.now()-readStart)+'ms done='+chunk.done+' valueLen='+(chunk.value?chunk.value.length:'null'));
                 chunkCount++;
                 // 前端断开（用户点击停止）
                 if (req.aborted || req.destroyed) {
