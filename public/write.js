@@ -1401,6 +1401,7 @@ function setBusyUI(busy) {
 }
 
 function stopAgentCall() {
+  if(_bufActive){stopBufferPolling();_bufActive=false;api('POST','/writing-projects/'+projectId+'/stop-stream');}
   if(activeAbortController){console.log('[Write] 用户终止Agent调用');activeAbortController.abort();activeAbortController=null;}
   // 在清理前保存已流式输出的部分内容
   var savedThinking = streamAccumThinking;
@@ -1804,6 +1805,7 @@ function pollStreamBuffer() {
     if (!buf || (!buf.content && !buf.thinking)) {
       if (_bufActive) {
         _bufActive = false;
+        setBusyUI(false);
         stopBufferPolling();
         api('GET', '/writing-projects/'+projectId+'/conversations').then(function(msgs) {
           agentMsgs = [];
@@ -1826,6 +1828,7 @@ function pollStreamBuffer() {
     _bufStartedAt = buf.startedAt || Date.now();
     if (!_bufActive) {
       _bufActive = true;
+      setBusyUI(true);
       streamAccumThinking = '';
       streamAccumContent = '';
       createStreamingBubble('orchestrator');
@@ -1856,7 +1859,7 @@ function pollStreamBuffer() {
       }
       streamAccumContent = buf.content;
       var cel = streamMsgEl ? streamMsgEl.querySelector('.stream-content') : null;
-      if (cel) cel.innerHTML = escHtml(buf.content).replace(/\n/g, '<br>');
+      if (cel) cel.innerHTML = formatAgentContent(buf.content);
       scrollToBottom();
     }
     _bufPollTimer = setTimeout(pollStreamBuffer, 500);

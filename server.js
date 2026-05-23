@@ -405,6 +405,15 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
             while (true) {
                 var chunk = await reader.read();
                 chunkCount++;
+                // 检查停止标记（用户从新页面点击了停止）
+                var stopMarker = path.join(BUFFER_DIR, 'stop_'+projectId);
+                if (fs.existsSync(stopMarker)) {
+                    console.log('[Write LLM] 收到停止信号，终止流式');
+                    reader.cancel();
+                    clearInterval(heartbeat);
+                    try { fs.unlinkSync(stopMarker); } catch(e) {}
+                    return;
+                }
                 if (chunk.done) { console.log('[Write LLM] DeepSeek流结束 chunkCount='+chunkCount); break; }
 
                 buf += decoder.decode(chunk.value, { stream:true });
@@ -454,9 +463,10 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 
             console.log('[Write LLM] 流式完成 回复长度='+fullContent.length+' 思考长度='+fullThinking.length+' tokens in='+tokIn+' out='+tokOut+(clientGone?' (后台完成)':''));
 
-            // 通知 SSE 客户端 + 清除磁盘缓冲
+            // 通知 SSE 客户端 + 清除磁盘缓冲和停止标记
             broadcastWriteEvent(projectId, {type:'stream-done',content:fullContent,thinking:fullThinking});
             clearStreamBuffer(projectId);
+            try { var sm = path.join(BUFFER_DIR, 'stop_'+projectId); if (fs.existsSync(sm)) fs.unlinkSync(sm); } catch(e) {}
 
             if (!clientGone) {
                 res.write('data: '+JSON.stringify({
@@ -849,6 +859,12 @@ app.get('/api/writing-projects/:id/stream-buffer', auth, (req, res) => {
     } else {
         res.json(null);
     }
+});
+
+// POST 停止后台流式（创建停止标记文件）
+app.post('/api/writing-projects/:id/stop-stream', auth, (req, res) => {
+    try { fs.writeFileSync(path.join(BUFFER_DIR, 'stop_'+req.params.id), '1'); } catch(e) {}
+    res.json({ ok: true });
 });
 
 function broadcastWriteEvent(projectId, data) {
