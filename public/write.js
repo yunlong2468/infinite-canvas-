@@ -1428,15 +1428,22 @@ function updateThinkingTimerDisplay() {
 function finalizeThinkingTimer() {
   if (streamThinkTimer) { clearInterval(streamThinkTimer); streamThinkTimer = null; }
   if (!streamMsgEl) return;
+  var dots = streamMsgEl.querySelector('.typing-dots');
+  if (dots) dots.style.display = 'none';
+  // 如果思考计时器从未启动（无思考阶段），直接隐藏整个thinking区域
+  if (streamThinkSecs === 0) {
+    var toggle = streamMsgEl.querySelector('.stream-think-toggle');
+    if (toggle) toggle.style.display = 'none';
+    var thinkBody = streamMsgEl.querySelector('.stream-think-body');
+    if (thinkBody) thinkBody.style.display = 'none';
+    return;
+  }
   var toggle = streamMsgEl.querySelector('.stream-think-toggle');
   if (toggle) {
     toggle.innerHTML = '💭 思考过程 (用时 '+streamThinkSecs+'s)';
     toggle.style.cursor = 'pointer';
     toggle.setAttribute('onclick', 'var b=this.nextElementSibling;b.classList.toggle(\'show\');this.innerHTML=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程 (用时 '+streamThinkSecs+'s)\'');
   }
-  // 隐藏跳动圆点
-  var dots = streamMsgEl.querySelector('.typing-dots');
-  if (dots) dots.style.display = 'none';
 }
 
 function appendThinkingDelta(delta) {

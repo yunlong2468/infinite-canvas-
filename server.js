@@ -342,15 +342,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
         dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)',
             [projectId, 'user', 'user', content]);
 
-        var streamReqBody = { model:model, messages:msgs, stream:true };
-        if (isDS) {
-            streamReqBody.temperature = 0;
-            streamReqBody.thinking = { type: 'enabled' };
-            streamReqBody.reasoning_effort = 'high';
-            streamReqBody.top_p = 1.0;
-        } else {
-            streamReqBody.temperature = 0.7;
-        }
+        var streamReqBody = { model:model, messages:msgs, stream:true, temperature:0.7 };
 
         console.log('[Write LLM] 流式调用 model='+model+' 消息数='+msgs.length+' endpoint='+endpoint.substring(0,40)+'...');
 
