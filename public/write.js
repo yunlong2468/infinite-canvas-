@@ -1800,6 +1800,11 @@ function autoSave(){if(saveTimer)clearTimeout(saveTimer);saveTimer=setTimeout(fu
 
 (function(){var sseUrl='/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);var sse=new EventSource(sseUrl);var reconnectTimer=null;sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='connected'){console.log('[Write] SSE已连接 projectId='+d.projectId);return;}if(d.type==='agent-message'&&d.msg){if(!agentBusy){var sseMsg={type:'chat',role:'assistant',time:Date.now(),agent:d.msg.agent_type,content:d.msg.content,thinking:d.msg.thinking||''};agentMsgs.push(sseMsg);appendMsgToDOM(renderSingleMsg(sseMsg));scrollToBottomIfAtBottom();console.log('[Write] SSE收到Agent消息: '+d.msg.agent_type);}}}catch(ex){console.error('[Write] SSE消息解析失败:',ex);}});sse.onerror=function(){console.log('[Write] Agent SSE断线，3秒后重连...');if(reconnectTimer)clearTimeout(reconnectTimer);reconnectTimer=setTimeout(function(){console.log('[Write] SSE重连检查');},3000);};window._writeSse=sse;})();
 
+// 页面刷新/关闭前通知后端终止SSE连接（让后端检测req.aborted并转入后台）
+window.addEventListener('beforeunload', function() {
+  if (activeAbortController) { activeAbortController.abort(); }
+});
+
 // ==================== 初始化 ====================
 api('GET','/writing-projects').then(function(projects){var p=projects?projects.find(function(x){return x.id===projectId;}):null;if(!p){window.location.replace('/projects.html');return;}writingData.title=p.title;});
 

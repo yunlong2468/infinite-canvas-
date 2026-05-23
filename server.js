@@ -375,9 +375,9 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
             var tokIn = 0, tokOut = 0;
             var chunkCount = 0;
 
-            // 心跳保活（10秒间隔，防止代理超时断连）
+            // 心跳保活（10秒间隔）；若写入失败说明客户端已断开→转入后台模式
             var heartbeat = setInterval(function() {
-                try { res.write('data: {"type":"waiting"}\n\n'); } catch(e) { clearInterval(heartbeat); }
+                try { res.write('data: {"type":"waiting"}\n\n'); } catch(e) { clearInterval(heartbeat); clientGone = true; }
             }, 10000);
 
             var clientGone = false;
