@@ -426,7 +426,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 
         // 立即写缓冲——让刷新后的轮询器知道有活跃流
         var streamStartedAt = Date.now();
-        saveStreamBuffer(projectId, '', '正在分析需求...', streamStartedAt);
+        saveStreamBuffer(projectId, '', '正在分析需求...', streamStartedAt); console.log('[Write LLM] 初始缓冲已写入');
 
         // === MCP风格工具调用循环 ===
         var toolMessages = JSON.parse(JSON.stringify(msgs)); // 深拷贝用于工具循环
@@ -474,7 +474,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                 var finalThinking = toolMsg.reasoning_content || '';
                 msgs.push({ role:'assistant', content:finalContent });
                 // 直接发送done（工具调用后的最终回复用非流式）
-                dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, thinking, token_used) VALUES (?,?,?,?,?,?)', [projectId, 'orchestrator', 'assistant', finalContent, finalThinking, (toolData.usage?toolData.usage.total_tokens:0)]);
+                dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, thinking, token_used) VALUES (?,?,?,?,?,?)', [projectId, 'orchestrator', 'assistant', finalContent, finalThinking, (toolData.usage?toolData.usage.total_tokens:0)]); console.log('[Write LLM] 最终回复已存DB contentLen='+finalContent.length);
                 saveDB();
                 clearStreamBuffer(projectId);
                 res.write('data: '+JSON.stringify({type:'done',content:finalContent,thinking:finalThinking})+'\n\n');

@@ -1289,7 +1289,7 @@ function copyUserMsg(msgIdx) {
   var text = agentMsgs[msgIdx].content || '';
   navigator.clipboard.writeText(text).then(function() {
     toast('已复制');
-  }).catch(function() {
+  }).catch(function(e) { console.error("[Poll] 请求失败:",e);
     toast('复制失败', 'error');
   });
 }
@@ -1906,7 +1906,7 @@ var _bufPollTimer = null, _bufActive = false, _bufStartedAt = 0;
 
 function pollStreamBuffer() {
   api('GET', '/writing-projects/'+projectId+'/stream-buffer?_t='+Date.now()).then(function(buf) {
-    if (!buf || (!buf.content && !buf.thinking)) {
+    if (!buf || (!buf.content && !buf.thinking)) { console.log("[Poll] 缓冲为空 _bufActive="+_bufActive+" msgs="+agentMsgs.length);
       if (_bufActive) {
         _bufActive = false;
         setBusyUI(false);
@@ -1918,7 +1918,7 @@ function pollStreamBuffer() {
       }
       return;
     }
-    if (agentBusy) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; }
+    console.log("[Poll] 收到缓冲 c="+(buf.content?buf.content.length:0)+" t="+(buf.thinking?buf.thinking.length:0)+" active="+_bufActive+" busy="+agentBusy); if (agentBusy) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; }
     _bufStartedAt = buf.startedAt || Date.now();
     if (!_bufActive) {
       _bufActive = true;
@@ -1970,7 +1970,7 @@ function replaceAgentPlaceholders(text) {
   });
 }
 
-function reloadHistoryFromDB() {
+function reloadHistoryFromDB() { console.log("[Reload] 从DB加载历史...");
   api('GET', '/writing-projects/'+projectId+'/conversations').then(function(msgs) {
     agentMsgs = [];
     var savedOpts = loadPickedOptions();
@@ -2007,7 +2007,7 @@ api('GET','/writing-projects').then(function(projects){var p=projects?projects.f
 
 // 加载历史对话
 api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs){agentMsgs=[];var savedOpts=loadPickedOptions();if(msgs&&msgs.length){msgs.forEach(function(m){var meta={};try{meta=JSON.parse(m.metadata||'{}');}catch(e){}var msg={type:meta.type,time:Date.parse(m.created_at||Date.now())||'chat',role:m.role,agent:m.agent_type,content:m.content,thinking:m.thinking||''};if(m.agent_type==='orchestrator'&&savedOpts[m.content]){msg.pickedOption=savedOpts[m.content];}agentMsgs.push(msg);});console.log('[Write] 已加载 '+msgs.length+' 条历史对话');}else{console.log('[Write] 该项目暂无历史对话');}renderAgentMessages();// 检测是否有中断的流式回复（最后一条是用户消息）→ 启动缓冲轮询
-if(agentMsgs.length>0&&agentMsgs[agentMsgs.length-1].role==='user'){stopBufferPolling();pollStreamBuffer();}
+console.log('[Init] 历史加载完成 msgs='+agentMsgs.length+' lastRole='+(agentMsgs.length>0?agentMsgs[agentMsgs.length-1].role:'none'));if(agentMsgs.length>0&&agentMsgs[agentMsgs.length-1].role==='user'){console.log('[Init] 启动缓冲轮询');stopBufferPolling();pollStreamBuffer();}
 requestAnimationFrame(function(){requestAnimationFrame(function(){var c=document.getElementById('subPanelChat');if(c){c.scrollTop=c.scrollHeight;markAllRead();}});});}).catch(function(err){console.error('[Write] 加载历史对话失败:',err);renderAgentMessages();});
 
 loadOutline(); loadTokenStats();
