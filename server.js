@@ -16,6 +16,17 @@ const DB_PATH = path.join(__dirname, 'data.db');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const BUFFER_DIR = path.join(__dirname, 'buffers');
+if (!fs.existsSync(BUFFER_DIR)) fs.mkdirSync(BUFFER_DIR, { recursive: true });
+
+// 流式输出磁盘缓冲（断线续传用）
+function streamBufferPath(projectId) { return path.join(BUFFER_DIR, 'stream_'+projectId+'.json'); }
+function saveStreamBuffer(projectId, content, thinking) {
+    try { fs.writeFileSync(streamBufferPath(projectId), JSON.stringify({content:content, thinking:thinking, updatedAt:Date.now()})); } catch(e) {}
+}
+function clearStreamBuffer(projectId) {
+    try { if (fs.existsSync(streamBufferPath(projectId))) fs.unlinkSync(streamBufferPath(projectId)); } catch(e) {}
+}
 
 // ==================== SQL.js 数据库 ====================
 let db = null;
@@ -415,8 +426,9 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                             fullContent += delta.content;
                             if (!clientGone) res.write('data: '+JSON.stringify({type:'content',delta:delta.content})+'\n\n');
                         }
-                        // 更新活跃流缓冲 + 广播给 write-sse 客户端（断线续传）
-                        activeStreams[projectId] = {content:fullContent, thinking:fullThinking, status:'streaming'};
+                        // 写入磁盘缓冲（断线续传用）
+                        saveStreamBuffer(projectId, fullContent, fullThinking);
+                        // 广播给 write-sse 客户端
                         if (delta && (delta.reasoning_content || delta.content)) {
                             broadcastWriteEvent(projectId, {type:delta.reasoning_content?'thinking':'content',delta:delta.reasoning_content||delta.content});
                         }
@@ -441,9 +453,9 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 
             console.log('[Write LLM] 流式完成 回复长度='+fullContent.length+' 思考长度='+fullThinking.length+' tokens in='+tokIn+' out='+tokOut+(clientGone?' (后台完成)':''));
 
-            // 通知所有 SSE 客户端流式完成，清理活跃流缓冲
+            // 通知 SSE 客户端 + 清除磁盘缓冲
             broadcastWriteEvent(projectId, {type:'stream-done',content:fullContent,thinking:fullThinking});
-            delete activeStreams[projectId];
+            clearStreamBuffer(projectId);
 
             if (!clientGone) {
                 res.write('data: '+JSON.stringify({
@@ -805,7 +817,6 @@ app.delete('/api/writing-projects/:id/chapters/:cid', auth, (req, res) => {
 
 // ==================== 写作 SSE ====================
 var writeSseClients = {};  // projectId → Set<response>
-var activeStreams = {};    // projectId → {content, thinking, status} 活跃流缓冲（断线续传）
 
 app.get('/api/write-sse', (req, res) => {
     var t = req.query.token;
@@ -822,17 +833,21 @@ app.get('/api/write-sse', (req, res) => {
     if (!writeSseClients[projectId]) writeSseClients[projectId] = new Set();
     writeSseClients[projectId].add(res);
 
-    // 断线重连：如果有活跃流，立即推送已生成的内容
-    var stream = activeStreams[projectId];
-    if (stream) {
-        if (stream.thinking) res.write('data: '+JSON.stringify({type:'thinking-replay',delta:stream.thinking})+'\n\n');
-        if (stream.content) res.write('data: '+JSON.stringify({type:'content-replay',delta:stream.content})+'\n\n');
-    }
-
     req.on('close', function() {
         var s = writeSseClients[projectId];
         if (s) { s.delete(res); if (s.size===0) delete writeSseClients[projectId]; }
     });
+});
+
+// GET 流式磁盘缓冲（断线续传用）
+app.get('/api/writing-projects/:id/stream-buffer', auth, (req, res) => {
+    var bufPath = streamBufferPath(req.params.id);
+    if (fs.existsSync(bufPath)) {
+        try { res.json(JSON.parse(fs.readFileSync(bufPath, 'utf-8'))); }
+        catch(e) { res.json(null); }
+    } else {
+        res.json(null);
+    }
 });
 
 function broadcastWriteEvent(projectId, data) {

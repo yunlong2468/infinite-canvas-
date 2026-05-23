@@ -1698,6 +1698,7 @@ function sendAgentMessage() {
   var inp=document.getElementById('agentInput'); if(!inp)return;
   var text=inp.value.trim(); if(!text||agentBusy)return;
   inp.value=''; setBusyUI(true);
+  stopBufferPolling(); _bufActive = false;
   // 标记所有撤回提示为已使用（重新编辑后链接失效）
   for (var i = agentMsgs.length-1; i >= 0; i--) {
     if (agentMsgs[i].type === 'undo_notice') { agentMsgs[i].used = true; }
@@ -1795,76 +1796,76 @@ function loadTokenStats(){api('GET','/writing-projects/'+projectId+'/token-stats
 var saveTimer=null, writingData={title:'',content:''};
 function autoSave(){if(saveTimer)clearTimeout(saveTimer);saveTimer=setTimeout(function(){var ed=document.getElementById('editableContent');writingData.content=ed?ed.innerHTML:'';if(writingData.chapterId){var wc=(ed.textContent||'').replace(/\s/g,'').length;api('PUT','/writing-projects/'+projectId+'/chapters/'+writingData.chapterId,{content_text:writingData.content,word_count:wc}).then(function(){console.log('[Write] 章节自动保存 id='+writingData.chapterId+' 字数='+wc);}).catch(function(e){console.error('[Write] 章节保存失败:',e);});}api('PUT','/writing-projects/'+projectId,writingData).then(function(){console.log('[Write] 项目自动保存完成');}).catch(function(e){console.error('[Write] 项目保存失败:',e);});},1000);}
 
-// ===== 断线续传：write-sse 事件处理 =====
-var _sseStreamActive = false;
+// ===== 断线续传：轮询磁盘缓冲 =====
+var _bufPollTimer = null, _bufLastContent = '', _bufActive = false;
 
-function handleSseReplay(d) {
-  // 回放已生成的内容（断线重连时）
-  if (agentBusy) return; // 正在主动流式中，忽略回放
-  if (!_sseStreamActive) {
-    _sseStreamActive = true;
-    streamAccumThinking = '';
-    streamAccumContent = '';
-    createStreamingBubble('orchestrator');
-    // 立即启动思考计时显示
-    startThinkingTimer();
-  }
-  if (d.type === 'thinking-replay') {
-    streamAccumThinking = d.delta;
-    var body = streamMsgEl ? streamMsgEl.querySelector('.stream-think-body') : null;
-    if (body) body.innerHTML = escHtml(d.delta);
-  } else if (d.type === 'content-replay') {
-    streamAccumContent = d.delta;
-    streamFirstContent = true;
-    finalizeThinkingTimer();
-    var cel = streamMsgEl ? streamMsgEl.querySelector('.stream-content') : null;
-    if (cel) { cel.style.display = ''; cel.innerHTML = escHtml(d.delta).replace(/\n/g, '<br>'); }
-  }
-  scrollToBottom();
+function pollStreamBuffer() {
+  api('GET', '/writing-projects/'+projectId+'/stream-buffer').then(function(buf) {
+    if (!buf || !buf.content) {
+      // 缓冲为空 → 流已结束或不存在
+      if (_bufActive) {
+        // 流刚结束，加载历史刷新消息列表
+        _bufActive = false;
+        stopBufferPolling();
+        api('GET', '/writing-projects/'+projectId+'/conversations').then(function(msgs) {
+          agentMsgs = [];
+          var savedOpts = loadPickedOptions();
+          if (msgs && msgs.length) {
+            msgs.forEach(function(m) {
+              var meta = {};
+              try { meta = JSON.parse(m.metadata || '{}'); } catch(e) {}
+              var msg = { type: meta.type, time: Date.parse(m.created_at || Date.now()) || 'chat', role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '' };
+              if (m.agent_type === 'orchestrator' && savedOpts[m.content]) msg.pickedOption = savedOpts[m.content];
+              agentMsgs.push(msg);
+            });
+          }
+          renderAgentMessages();
+        }).catch(function() {});
+      }
+      return;
+    }
+    // 有缓冲内容 → 创建/更新流式气泡
+    if (agentBusy) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; } // 主动流式中，跳过
+    if (!_bufActive) {
+      _bufActive = true;
+      streamAccumThinking = '';
+      streamAccumContent = '';
+      createStreamingBubble('orchestrator');
+    }
+    // 更新思考内容
+    if (buf.thinking && buf.thinking !== streamAccumThinking) {
+      if (!streamThinkTimer) startThinkingTimer();
+      streamAccumThinking = buf.thinking;
+      var body = streamMsgEl ? streamMsgEl.querySelector('.stream-think-body') : null;
+      if (body) body.innerHTML = escHtml(buf.thinking);
+    }
+    // 更新正文内容
+    if (buf.content !== streamAccumContent) {
+      streamAccumContent = buf.content;
+      if (buf.content && !streamFirstContent) {
+        streamFirstContent = true;
+        finalizeThinkingTimer();
+        var cel = streamMsgEl ? streamMsgEl.querySelector('.stream-content') : null;
+        if (cel) cel.style.display = '';
+      }
+      var cel = streamMsgEl ? streamMsgEl.querySelector('.stream-content') : null;
+      if (cel) cel.innerHTML = escHtml(buf.content).replace(/\n/g, '<br>');
+      scrollToBottom();
+    }
+    _bufPollTimer = setTimeout(pollStreamBuffer, 500);
+  }).catch(function() {
+    _bufPollTimer = setTimeout(pollStreamBuffer, 1000);
+  });
 }
 
-function handleSseStream(d) {
-  if (agentBusy) return; // 正在主动流式中，忽略SSE广播
-  if (!_sseStreamActive) {
-    _sseStreamActive = true;
-    createStreamingBubble('orchestrator');
-  }
-  if (d.type === 'thinking') {
-    if (!streamThinkTimer) startThinkingTimer();
-    appendThinkingDelta(d.delta);
-  } else if (d.type === 'content') {
-    appendContentDelta(d.delta);
-  }
-}
-
-function handleSseStreamDone(d) {
-  if (agentBusy || !_sseStreamActive) return;
-  _sseStreamActive = false;
-  // 用最终内容替换流式气泡
-  if (streamThinkTimer) { clearInterval(streamThinkTimer); streamThinkTimer = null; }
-  var msg = {
-    type: 'chat',
-    role: 'assistant',
-    agent: 'orchestrator',
-    content: d.content || streamAccumContent || '',
-    thinking: d.thinking || streamAccumThinking || '',
-    time: Date.now()
-  };
-  agentMsgs.push(msg);
-  var finalHtml = renderSingleMsg(msg);
-  var streamEl = document.querySelector('.msg-streaming');
-  if (streamEl) streamEl.outerHTML = finalHtml;
-  streamMsgEl = null;
-  streamAccumThinking = '';
-  streamAccumContent = '';
-  streamFirstContent = false;
-  scrollToBottomIfAtBottom();
+function stopBufferPolling() {
+  if (_bufPollTimer) { clearTimeout(_bufPollTimer); _bufPollTimer = null; }
 }
 
 // ==================== SSE ====================
 (function(){var sse=new EventSource('/api/sse?token='+encodeURIComponent(token));sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='kicked'){localStorage.removeItem('canvas_token');localStorage.removeItem('canvas_username');window.location.replace('/login.html?reason=kicked');}}catch(ex){}});sse.onerror=function(){console.log('[Write] 踢出SSE断线，自动重连中...');};})();
 
-(function(){var sseUrl='/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);var sse=new EventSource(sseUrl);sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='connected'){console.log('[Write] SSE已连接 projectId='+d.projectId);return;}if(d.type==='thinking-replay'||d.type==='content-replay'){handleSseReplay(d);return;}if(d.type==='thinking'||d.type==='content'){handleSseStream(d);return;}if(d.type==='stream-done'){handleSseStreamDone(d);return;}if(d.type==='agent-message'&&d.msg){if(!agentBusy){var sseMsg={type:'chat',role:'assistant',time:Date.now(),agent:d.msg.agent_type,content:d.msg.content,thinking:d.msg.thinking||''};agentMsgs.push(sseMsg);appendMsgToDOM(renderSingleMsg(sseMsg));scrollToBottomIfAtBottom();}}}catch(ex){}});sse.onerror=function(){console.log('[Write] Agent SSE断线，自动重连中...');};window._writeSse=sse;})();
+(function(){var sseUrl='/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);var sse=new EventSource(sseUrl);sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='connected'){console.log('[Write] SSE已连接 projectId='+d.projectId);return;}if(d.type==='agent-message'&&d.msg){if(!agentBusy){var sseMsg={type:'chat',role:'assistant',time:Date.now(),agent:d.msg.agent_type,content:d.msg.content,thinking:d.msg.thinking||''};agentMsgs.push(sseMsg);appendMsgToDOM(renderSingleMsg(sseMsg));scrollToBottomIfAtBottom();}}}catch(ex){}});sse.onerror=function(){console.log('[Write] Agent SSE断线，自动重连中...');};window._writeSse=sse;})();
 
 // 页面刷新/关闭前通知后端终止SSE连接（让后端检测req.aborted并转入后台）
 window.addEventListener('beforeunload', function() {
@@ -1875,7 +1876,9 @@ window.addEventListener('beforeunload', function() {
 api('GET','/writing-projects').then(function(projects){var p=projects?projects.find(function(x){return x.id===projectId;}):null;if(!p){window.location.replace('/projects.html');return;}writingData.title=p.title;});
 
 // 加载历史对话
-api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs){agentMsgs=[];var savedOpts=loadPickedOptions();if(msgs&&msgs.length){msgs.forEach(function(m){var meta={};try{meta=JSON.parse(m.metadata||'{}');}catch(e){}var msg={type:meta.type,time:Date.parse(m.created_at||Date.now())||'chat',role:m.role,agent:m.agent_type,content:m.content,thinking:m.thinking||''};if(m.agent_type==='orchestrator'&&savedOpts[m.content]){msg.pickedOption=savedOpts[m.content];}agentMsgs.push(msg);});console.log('[Write] 已加载 '+msgs.length+' 条历史对话');}else{console.log('[Write] 该项目暂无历史对话');}renderAgentMessages();requestAnimationFrame(function(){requestAnimationFrame(function(){var c=document.getElementById('subPanelChat');if(c){c.scrollTop=c.scrollHeight;markAllRead();}});});}).catch(function(err){console.error('[Write] 加载历史对话失败:',err);renderAgentMessages();});
+api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs){agentMsgs=[];var savedOpts=loadPickedOptions();if(msgs&&msgs.length){msgs.forEach(function(m){var meta={};try{meta=JSON.parse(m.metadata||'{}');}catch(e){}var msg={type:meta.type,time:Date.parse(m.created_at||Date.now())||'chat',role:m.role,agent:m.agent_type,content:m.content,thinking:m.thinking||''};if(m.agent_type==='orchestrator'&&savedOpts[m.content]){msg.pickedOption=savedOpts[m.content];}agentMsgs.push(msg);});console.log('[Write] 已加载 '+msgs.length+' 条历史对话');}else{console.log('[Write] 该项目暂无历史对话');}renderAgentMessages();// 检测是否有中断的流式回复（最后一条是用户消息）→ 启动缓冲轮询
+if(agentMsgs.length>0&&agentMsgs[agentMsgs.length-1].role==='user'){stopBufferPolling();pollStreamBuffer();}
+requestAnimationFrame(function(){requestAnimationFrame(function(){var c=document.getElementById('subPanelChat');if(c){c.scrollTop=c.scrollHeight;markAllRead();}});});}).catch(function(err){console.error('[Write] 加载历史对话失败:',err);renderAgentMessages();});
 
 loadOutline(); loadTokenStats();
 
