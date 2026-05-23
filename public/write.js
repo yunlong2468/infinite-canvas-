@@ -1940,7 +1940,7 @@ function pollStreamBuffer() {
       if (buf.thinking !== streamAccumThinking) {
         streamAccumThinking = buf.thinking;
         var body = streamMsgEl ? streamMsgEl.querySelector('.stream-think-body') : null;
-        if (body) body.innerHTML = escHtml(buf.thinking);
+        if (body) body.innerHTML = escHtml(replaceAgentPlaceholders(buf.thinking));
       }
     }
     // 更新正文内容（增量追加，避免每轮全量重渲染）
@@ -1960,6 +1960,13 @@ function pollStreamBuffer() {
     _bufPollTimer = setTimeout(pollStreamBuffer, 500);
   }).catch(function() {
     _bufPollTimer = setTimeout(pollStreamBuffer, 1000);
+  });
+}
+
+function replaceAgentPlaceholders(text) {
+  if (!text) return text;
+  return text.replace(/\{agent:(\w+)\}/g, function(_, id) {
+    return getAgentName(id);
   });
 }
 

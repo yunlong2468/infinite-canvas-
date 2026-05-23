@@ -451,14 +451,14 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                     var tc = toolMsg.tool_calls[ti];
                     var toolName = tc.function.name;
                     var toolArgs = tc.function.arguments || '{}';
-                    var toolLabel = toolName==='generate_outline'?'大纲':toolName==='generate_characters'?'角色':toolName;
+                    // 获取子智能体的默认名（对应前端agentDefaults的type key）
+                    var subAgentType = toolName==='generate_outline'?'outliner':toolName==='generate_characters'?'character':toolName;
                     console.log('[Write LLM] 执行工具: '+toolName);
-                    // 缓冲：系统消息放thinking，正文留空
-                    saveStreamBuffer(projectId, '', '🎭 策划调用'+toolLabel+'智能体\n正在生成中...', streamStartedAt);
+                    // 缓冲：{agent:xxx}占位符由前端替换为用户昵称
+                    saveStreamBuffer(projectId, '', '{agent:orchestrator}调用{agent:'+subAgentType+'}智能体\n正在生成中...', streamStartedAt);
                     res.write('data: '+JSON.stringify({type:'tool_start',tool:toolName})+'\n\n');
                     var toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId);
                     console.log('[Write LLM] 工具完成: '+toolName+' '+toolResult.summary);
-                    // 缓冲：完成提示放thinking(会显示用时)，正文放工具结果
                     var resultContent = toolResult.result ? (toolResult.result||'').substring(0, 500) : toolResult.summary;
                     saveStreamBuffer(projectId, resultContent, '✅ '+toolResult.summary, streamStartedAt);
                     res.write('data: '+JSON.stringify({type:'tool_end',tool:toolName,summary:toolResult.summary,content:toolResult.result||''})+'\n\n');
