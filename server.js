@@ -447,12 +447,18 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                     var tc = toolMsg.tool_calls[ti];
                     var toolName = tc.function.name;
                     var toolArgs = tc.function.arguments || '{}';
+                    var toolLabel = toolName==='generate_outline'?'大纲':toolName==='generate_characters'?'角色':toolName;
                     console.log('[Write LLM] 执行工具: '+toolName);
-                    saveStreamBuffer(projectId, '', '正在调用'+toolName+'智能体...', streamStartedAt);
+                    // 缓冲：策划调用子智能体 + 思考等待状态
+                    var inviteText = '🎭 策划 邀请 '+toolLabel+' 智能体进入群聊\n';
+                    saveStreamBuffer(projectId, inviteText, '正在等待'+toolLabel+'智能体完成...', streamStartedAt);
                     res.write('data: '+JSON.stringify({type:'tool_start',tool:toolName})+'\n\n');
                     var toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId);
                     console.log('[Write LLM] 工具完成: '+toolName+' '+toolResult.summary);
-                    saveStreamBuffer(projectId, toolResult.summary, '', streamStartedAt);
+                    // 缓冲：工具结果 + 完成提示
+                    var resultText = inviteText + '\n✅ ' + toolResult.summary;
+                    if (toolResult.result) resultText += '\n\n' + (toolResult.result||'').substring(0, 500);
+                    saveStreamBuffer(projectId, resultText, '', streamStartedAt);
                     res.write('data: '+JSON.stringify({type:'tool_end',tool:toolName,summary:toolResult.summary,content:toolResult.result||''})+'\n\n');
                     toolMessages.push({ role:'tool', tool_call_id:tc.id, content:JSON.stringify(toolResult) });
                 }
