@@ -254,12 +254,13 @@ function finishRename(id, name) {
 }
 function showConfirm(msg, cb) {
   var ov = document.createElement('div');
+  ov.className = 'confirm-overlay';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';
   ov.innerHTML = '<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:380px;">'+
     '<div style="font-size:14px;margin-bottom:16px;line-height:1.5;color:#fff;">'+msg+'</div>'+
     '<div style="display:flex;gap:8px;justify-content:flex-end;">'+
-      '<button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'div > div\').parentElement.remove();window._pcfm(false)">取消</button>'+
-      '<button style="padding:8px 18px;border-radius:6px;border:none;background:#05A3C5;color:#fff;cursor:pointer;font-family:inherit;" onclick="this.closest(\'div > div\').parentElement.remove();window._pcfm(true)">确定</button>'+
+      '<button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'.confirm-overlay\').remove();window._pcfm(false)">取消</button>'+
+      '<button style="padding:8px 18px;border-radius:6px;border:none;background:#05A3C5;color:#fff;cursor:pointer;font-family:inherit;" onclick="this.closest(\'.confirm-overlay\').remove();window._pcfm(true)">确定</button>'+
     '</div></div>';
   document.body.appendChild(ov);
   window._pcfm = cb;
