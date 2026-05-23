@@ -381,36 +381,29 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
             }, 10000);
 
             var clientGone = false;
-            console.log('[Write LLM] 进入读循环 req.aborted='+req.aborted+' req.destroyed='+req.destroyed);
-            while (true) {
-                var readStart = Date.now();
-                var chunk = await reader.read();
-                console.log('[Write LLM] reader.read耗时='+(Date.now()-readStart)+'ms done='+chunk.done+' valueLen='+(chunk.value?chunk.value.length:'null'));
-                chunkCount++;
-                // 用户点击停止 → 前端发送abort信号 → 终止流式
-                if (req.aborted && !clientGone) {
+            // 监听连接关闭（页面刷新/关闭时最可靠的检测方式）
+            req.on('close', function() {
+                if (!clientGone) {
                     clientGone = true;
                     clearInterval(heartbeat);
-                    console.log('[Write LLM] 前端断开，后台继续完成（已读'+chunkCount+'个chunk）');
+                    console.log('[Write LLM] 客户端断开（req.close），转入后台模式');
                 }
-                if (chunk.done) { console.log('[Write LLM] DeepSeek流结束 chunkCount='+chunkCount+' buf剩余='+buf.length); break; }
+            });
+            console.log('[Write LLM] 进入读循环');
+            while (true) {
+                var chunk = await reader.read();
+                chunkCount++;
+                if (chunk.done) { console.log('[Write LLM] DeepSeek流结束 chunkCount='+chunkCount); break; }
 
-                var rawBytes = chunk.value;
-                if (!clientGone) console.log('[Write LLM] 收到chunk #'+chunkCount+' 字节数='+(rawBytes?rawBytes.length:0));
-                buf += decoder.decode(rawBytes, { stream:true });
+                buf += decoder.decode(chunk.value, { stream:true });
                 var lines = buf.split('\n');
                 buf = lines.pop() || '';
 
                 for (var li = 0; li < lines.length; li++) {
                     var line = lines[li].trim();
-                    if (!line || line.indexOf('data: ') !== 0) {
-                        if (line && line.indexOf('data:') === 0 && line.indexOf('data: ') !== 0) {
-                            if (!clientGone) console.log('[Write LLM] 异常SSE行(缺少空格): '+line.substring(0,100));
-                        }
-                        continue;
-                    }
+                    if (!line || line.indexOf('data: ') !== 0) continue;
                     var data = line.slice(6);
-                    if (data === '[DONE]') { if (!clientGone) console.log('[Write LLM] 收到[DONE]'); continue; }
+                    if (data === '[DONE]') continue;
                     try {
                         var parsed = JSON.parse(data);
                         var delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta;
@@ -419,23 +412,18 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                             if (!clientGone) res.write('data: '+JSON.stringify({type:'thinking',delta:delta.reasoning_content})+'\n\n');
                         }
                         if (delta && delta.content) {
-                            if (!fullContent && !clientGone) console.log('[Write LLM] 首个content chunk');
                             fullContent += delta.content;
                             if (!clientGone) res.write('data: '+JSON.stringify({type:'content',delta:delta.content})+'\n\n');
-                        }
-                        if (delta && !delta.reasoning_content && !delta.content && !delta.role) {
-                            var keys = Object.keys(delta);
-                            if (keys.length && !clientGone) console.log('[Write LLM] 未知delta字段: '+JSON.stringify(keys));
                         }
                         if (parsed.usage) {
                             tokIn = parsed.usage.prompt_tokens || 0;
                             tokOut = parsed.usage.completion_tokens || 0;
                         }
-                    } catch(e) { if (!clientGone) console.log('[Write LLM] JSON解析失败: '+e.message+' 原始: '+data.substring(0,80)); }
+                    } catch(e) {}
                 }
             }
 
-            if (!clientGone) clearInterval(heartbeat);
+            clearInterval(heartbeat);
 
             // 保存助手回复到数据库（无论客户端是否断开）
             if (fullContent || fullThinking) {
