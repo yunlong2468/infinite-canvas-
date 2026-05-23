@@ -1354,6 +1354,7 @@ function undoLastUserMsg() {
 // ===== Agent 调用 =====
 var agentBusy=false, pendingAgent=null, activeAbortController=null;
 var streamMsgEl=null, streamThinkTimer=null, streamThinkSecs=0, streamFirstContent=false, streamConnTimeout=null;
+var streamAccumThinking='', streamAccumContent='';
 
 function setBusyUI(busy) {
   agentBusy=busy;
@@ -1365,12 +1366,30 @@ function setBusyUI(busy) {
 
 function stopAgentCall() {
   if(activeAbortController){console.log('[Write] 用户终止Agent调用');activeAbortController.abort();activeAbortController=null;}
+  // 在清理前保存已流式输出的部分内容
+  var savedThinking = streamAccumThinking;
+  var savedContent = streamAccumContent;
   cleanupStreamingState();
   var oldStream = document.querySelector('.msg-streaming');
   if (oldStream) oldStream.remove();
   pendingAgent=null;renderPendingAgent();
-  var stopMsg={type:'system',content:'⏹ 已终止',time:Date.now()};
-  agentMsgs.push(stopMsg);appendMsgToDOM(renderSingleMsg(stopMsg));
+  if (savedThinking || savedContent) {
+    // 有部分内容，保存为中断消息
+    var partialMsg = {
+      type: 'chat',
+      role: 'assistant',
+      agent: 'orchestrator',
+      content: savedContent + (savedContent ? '\n\n⏹ 已终止' : '⏹ 已终止'),
+      thinking: savedThinking,
+      time: Date.now()
+    };
+    agentMsgs.push(partialMsg);
+    appendMsgToDOM(renderSingleMsg(partialMsg));
+  } else {
+    var stopMsg = {type:'system',content:'⏹ 已终止',time:Date.now()};
+    agentMsgs.push(stopMsg);
+    appendMsgToDOM(renderSingleMsg(stopMsg));
+  }
   setBusyUI(false);
 }
 
@@ -1379,6 +1398,7 @@ function cleanupStreamingState() {
   if (streamThinkTimer) { clearInterval(streamThinkTimer); streamThinkTimer = null; }
   if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }
   streamMsgEl = null; streamThinkSecs = 0; streamFirstContent = false;
+  streamAccumThinking = ''; streamAccumContent = '';
 }
 
 function createStreamingBubble(agentType) {
@@ -1448,6 +1468,7 @@ function finalizeThinkingTimer() {
 
 function appendThinkingDelta(delta) {
   if (!streamMsgEl) return;
+  streamAccumThinking += delta;
   var body = streamMsgEl.querySelector('.stream-think-body');
   if (body) {
     body.innerHTML += escHtml(delta);
@@ -1457,6 +1478,7 @@ function appendThinkingDelta(delta) {
 
 function appendContentDelta(delta) {
   if (!streamMsgEl) return;
+  streamAccumContent += delta;
   if (!streamFirstContent) {
     streamFirstContent = true;
     finalizeThinkingTimer();
