@@ -21,7 +21,10 @@ if (!fs.existsSync(BUFFER_DIR)) fs.mkdirSync(BUFFER_DIR, { recursive: true });
 
 // 流式输出磁盘缓冲（断线续传用）
 function streamBufferPath(projectId) { return path.join(BUFFER_DIR, 'stream_'+projectId+'.json'); }
+var _bufWriteCount = {};
 function saveStreamBuffer(projectId, content, thinking, startedAt) {
+    _bufWriteCount[projectId] = (_bufWriteCount[projectId] || 0) + 1;
+    if (_bufWriteCount[projectId] % 20 === 1) console.log('[Buffer] 写入 #'+_bufWriteCount[projectId]+' projectId='+projectId+' contentLen='+(content?content.length:0)+' thinkingLen='+(thinking?thinking.length:0));
     try { fs.writeFileSync(streamBufferPath(projectId), JSON.stringify({content:content, thinking:thinking, startedAt:startedAt, updatedAt:Date.now()})); } catch(e) {}
 }
 function clearStreamBuffer(projectId) {
@@ -855,8 +858,11 @@ app.get('/api/writing-projects/:id/stream-buffer', auth, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     var bufPath = streamBufferPath(req.params.id);
     if (fs.existsSync(bufPath)) {
-        try { res.json(JSON.parse(fs.readFileSync(bufPath, 'utf-8'))); }
-        catch(e) { res.json(null); }
+        try {
+            var buf = JSON.parse(fs.readFileSync(bufPath, 'utf-8'));
+            res.json(buf);
+        }
+        catch(e) { console.log('[Buffer] 读取失败:', e.message); res.json(null); }
     } else {
         res.json(null);
     }
