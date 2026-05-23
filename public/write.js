@@ -635,7 +635,7 @@ var RENDER = {
     writingData.chapterId = tab.chapterId || null;
     activeChapterId = tab.chapterId || null;
     container.innerHTML = ''
-      + '<div class="ed-topbar"><span class="ed-title" id="chapTitle">'+escHtml(title)+'</span><span style="font-size:11px;color:var(--text2);" id="wordCount">字数: 0</span><button onclick="autoSave()">💾 保存</button></div>'
+      + '<div class="ed-topbar"><span class="ed-title" id="chapTitle">'+escHtml(title)+'</span><span style="font-size:11px;color:var(--text2);" id="wordCount">字数: 0</span><button onclick="saveChapterNow()">💾 保存</button></div>'
       + '<div class="ed-toolbar">'
       + '<select onchange="document.execCommand(\'formatBlock\',false,this.value);this.selectedIndex=0;" style="width:80px;"><option value="">正文</option><option value="h2">标题</option><option value="h3">副标题</option></select><span class="sep"></span>'
       + '<button onclick="document.execCommand(\'bold\')"><b>B</b></button><button onclick="document.execCommand(\'italic\')"><i>I</i></button><button onclick="document.execCommand(\'underline\')"><u>U</u></button><span class="sep"></span>'
@@ -1790,10 +1790,10 @@ function renderOutlineTree() {
   var html='';
   volumes.forEach(function(v){
     var vChaps=chapters.filter(function(c){return c.volume_id===v.id;});
-    html+='<div class="ot-vol"><div class="ot-vol-header" onclick="toggleVolume(this)"><span class="ot-vol-arrow">▶</span><span class="ot-vol-title">'+escHtml(v.title||'第'+v.volume_no+'卷')+'</span><button class="ot-vol-add" onclick="event.stopPropagation();addChapter('+v.id+')" title="添加章">+章</button></div><div class="ot-chapters">';
+    html+='<div class="ot-vol"><div class="ot-vol-header" onclick="toggleVolume(this)" oncontextmenu="event.preventDefault();event.stopPropagation();showVolCtxMenu(event,'+v.id+')"><span class="ot-vol-arrow">▶</span><span class="ot-vol-title">'+escHtml(v.title||'第'+v.volume_no+'卷')+'</span><button class="ot-vol-add" onclick="event.stopPropagation();addChapter('+v.id+')" title="添加章">+章</button></div><div class="ot-chapters">';
     vChaps.forEach(function(c){
       var active=activeChapterId===c.id?' active':'';
-      html+='<div class="ot-chap'+active+'" ondblclick="openChapter('+c.id+')" onclick="activeChapterId='+c.id+';renderOutlineTree();">'+escHtml(c.title||'第'+c.chapter_no+'章')+'</div>';
+      html+='<div class="ot-chap'+active+'" ondblclick="openChapter('+c.id+')" onclick="activeChapterId='+c.id+';renderOutlineTree();" oncontextmenu="event.preventDefault();event.stopPropagation();showChapCtxMenu(event,'+c.id+')">'+escHtml(c.title||'第'+c.chapter_no+'章')+'</div>';
     });
     html+='</div></div>';
   });
@@ -1804,6 +1804,77 @@ function renderOutlineTree() {
 function toggleVolume(el){var arrow=el.querySelector('.ot-vol-arrow'),chaps=el.nextElementSibling;if(chaps&&chaps.classList.contains('ot-chapters')){var hidden=chaps.style.display==='none';chaps.style.display=hidden?'block':'none';arrow.textContent=hidden?'▼':'▶';}}
 function addVolume(){api('POST','/writing-projects/'+projectId+'/volumes',{title:'新卷'}).then(function(r){console.log('[Write] 新建卷 id='+(r&&r.id));loadOutline();}).catch(function(e){console.error('[Write] 新建卷失败:',e);});}
 function addChapter(volumeId){api('POST','/writing-projects/'+projectId+'/chapters',{volume_id:volumeId,title:'新章'}).then(function(r){console.log('[Write] 新建章 id='+(r&&r.id)+' vid='+volumeId);loadOutline();}).catch(function(e){console.error('[Write] 新建章失败:',e);});}
+
+// ===== 卷/章右键菜单 =====
+function showVolCtxMenu(e, volId) {
+  var titleEl = e.target.closest('.ot-vol-header').querySelector('.ot-vol-title');
+  var volTitle = titleEl ? titleEl.textContent : '';
+  showPrompt('重命名卷', volTitle, function(newName) {
+    if (newName && newName.trim()) {
+      api('PUT', '/writing-projects/'+projectId+'/volumes/'+volId, {title: newName.trim()}).then(function() { loadOutline(); });
+    }
+  });
+  setTimeout(function() {
+    var ov = document.querySelector('.prompt-overlay');
+    if (ov) {
+      var delBtn = document.createElement('button');
+      delBtn.textContent = '🗑️ 删除此卷';
+      delBtn.style.cssText = 'display:block;margin:8px auto 0;padding:6px 12px;border-radius:6px;border:0.5px solid rgba(245,63,63,0.3);background:rgba(245,63,63,0.1);color:#F53F3F;cursor:pointer;font-family:inherit;font-size:12px;';
+      delBtn.onclick = function() {
+        ov.remove();
+        showConfirm('确定删除此卷及其所有章节吗？此操作不可撤销。', function(ok) {
+          if (ok) { api('DELETE', '/writing-projects/'+projectId+'/volumes/'+volId).then(function() { loadOutline(); }); }
+        });
+      };
+      ov.querySelector('div > div:last-child').appendChild(delBtn);
+    }
+  }, 100);
+}
+
+function showChapCtxMenu(e, chapId) {
+  var titleEl = e.target.closest('.ot-chap');
+  var chapTitle = titleEl ? titleEl.textContent : '';
+  showPrompt('重命名章', chapTitle, function(newName) {
+    if (newName && newName.trim()) {
+      api('PUT', '/writing-projects/'+projectId+'/chapters/'+chapId, {title: newName.trim()}).then(function() { loadOutline(); });
+    }
+  });
+  setTimeout(function() {
+    var ov = document.querySelector('.prompt-overlay');
+    if (ov) {
+      var delBtn = document.createElement('button');
+      delBtn.textContent = '🗑️ 删除此章';
+      delBtn.style.cssText = 'display:block;margin:8px auto 0;padding:6px 12px;border-radius:6px;border:0.5px solid rgba(245,63,63,0.3);background:rgba(245,63,63,0.1);color:#F53F3F;cursor:pointer;font-family:inherit;font-size:12px;';
+      delBtn.onclick = function() {
+        ov.remove();
+        showConfirm('确定删除此章吗？', function(ok) {
+          if (ok) { api('DELETE', '/writing-projects/'+projectId+'/chapters/'+chapId).then(function() { loadOutline(); }); }
+        });
+      };
+      ov.querySelector('div > div:last-child').appendChild(delBtn);
+    }
+  }, 100);
+}
+
+// ===== 章节立即保存 =====
+function saveChapterNow() {
+  var ed = document.getElementById('editableContent');
+  if (!ed) return;
+  writingData.content = ed.innerHTML;
+  if (writingData.chapterId) {
+    var wc = (ed.textContent || '').replace(/\s/g, '').length;
+    api('PUT', '/writing-projects/' + projectId + '/chapters/' + writingData.chapterId, {
+      content_text: writingData.content,
+      word_count: wc
+    }).then(function() {
+      console.log('[Write] 章节保存成功 id=' + writingData.chapterId + ' 字数=' + wc);
+      var wcEl = document.getElementById('wordCount');
+      if (wcEl) wcEl.textContent = '字数: ' + wc;
+    }).catch(function(e) {
+      console.error('[Write] 章节保存失败:', e);
+    });
+  }
+}
 
 function generateOutline() {
   console.log('[Write] 触发大纲生成');
