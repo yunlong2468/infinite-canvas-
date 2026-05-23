@@ -387,7 +387,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                 console.log('[Write LLM] reader.read耗时='+(Date.now()-readStart)+'ms done='+chunk.done+' valueLen='+(chunk.value?chunk.value.length:'null'));
                 chunkCount++;
                 // 前端断开（用户点击停止）
-                if (req.aborted || req.destroyed) {
+                if (req.aborted) {
                     clearInterval(heartbeat);
                     reader.cancel();
                     console.log('[Write LLM] 前端断开，停止流式（已读'+chunkCount+'个chunk）');
@@ -456,7 +456,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
             res.end();
 
         } catch(err) {
-            if (req.aborted || req.destroyed) { console.log('[Write LLM] 前端断开'); return; }
+            if (req.aborted) { console.log('[Write LLM] 前端断开'); return; }
             console.error('[Write LLM] 流式异常:', err.message);
             try { res.write('data: '+JSON.stringify({type:'error',message:err.message})+'\n\n'); res.end(); } catch(e) {}
             dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)',
@@ -480,7 +480,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
         method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
         body:JSON.stringify(reqBody)
     }).then(function(r){ return r.json(); }).then(function(d) {
-        if (req.aborted || req.destroyed) { console.log('[Write LLM] 前端已断开，放弃保存'); return; }
+        if (req.aborted) { console.log('[Write LLM] 前端已断开，放弃保存'); return; }
         var reply = (d.choices && d.choices[0] && d.choices[0].message) ? d.choices[0].message.content : '';
         var thinking = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.reasoning_content) ? d.choices[0].message.reasoning_content : '';
         if (!reply) { console.log('[Write LLM] 空响应'); reply='（模型未返回内容，请重试）'; }
@@ -496,7 +496,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 
         res.json({ content:reply, thinking:thinking||'', token_in:tokIn, token_out:tokOut });
     }).catch(function(err) {
-        if (req.aborted || req.destroyed) { console.log('[Write LLM] 前端已断开，放弃错误保存'); return; }
+        if (req.aborted) { console.log('[Write LLM] 前端已断开，放弃错误保存'); return; }
         console.error('[Write LLM] 调用失败:',err.message);
         dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)', [projectId, 'orchestrator', 'assistant', '⚠️ 调用失败：'+err.message]);
         saveDB();
