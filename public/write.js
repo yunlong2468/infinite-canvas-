@@ -1801,8 +1801,8 @@ var _bufPollTimer = null, _bufLastContent = '', _bufActive = false;
 
 function pollStreamBuffer() {
   api('GET', '/writing-projects/'+projectId+'/stream-buffer').then(function(buf) {
-    if (!buf || !buf.content) {
-      // 缓冲为空 → 流已结束或不存在
+    if (!buf || (!buf.content && !buf.thinking)) {
+      // 缓冲为空（无内容且无思考）→ 流已结束或不存在
       if (_bufActive) {
         // 流刚结束，加载历史刷新消息列表
         _bufActive = false;
