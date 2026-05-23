@@ -21,8 +21,8 @@ if (!fs.existsSync(BUFFER_DIR)) fs.mkdirSync(BUFFER_DIR, { recursive: true });
 
 // 流式输出磁盘缓冲（断线续传用）
 function streamBufferPath(projectId) { return path.join(BUFFER_DIR, 'stream_'+projectId+'.json'); }
-function saveStreamBuffer(projectId, content, thinking, startedAt) {
-    try { fs.writeFileSync(streamBufferPath(projectId), JSON.stringify({content:content, thinking:thinking, startedAt:startedAt, updatedAt:Date.now()})); } catch(e) {}
+function saveStreamBuffer(projectId, content, thinking, startedAt, phase, agentType) {
+    try { fs.writeFileSync(streamBufferPath(projectId), JSON.stringify({content:content, thinking:thinking, startedAt:startedAt, updatedAt:Date.now(), phase:phase||'streaming', agentType:agentType||'orchestrator'})); } catch(e) {}
 }
 function clearStreamBuffer(projectId) {
     try { if (fs.existsSync(streamBufferPath(projectId))) fs.unlinkSync(streamBufferPath(projectId)); } catch(e) {}
@@ -426,7 +426,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 
         // 立即写缓冲——让刷新后的轮询器知道有活跃流
         var streamStartedAt = Date.now();
-        saveStreamBuffer(projectId, '', '正在分析需求...', streamStartedAt); console.log('[Write LLM] 初始缓冲已写入');
+        saveStreamBuffer(projectId, '', '正在分析需求...', streamStartedAt, 'thinking'); console.log('[Write LLM] 初始缓冲已写入');
 
         // === MCP风格工具调用循环 ===
         var toolMessages = JSON.parse(JSON.stringify(msgs)); // 深拷贝用于工具循环
@@ -446,6 +446,14 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 
             if (toolMsg.tool_calls && toolMsg.tool_calls.length > 0) {
                 console.log('[Write LLM] 检测到'+toolMsg.tool_calls.length+'个工具调用');
+                // 入库调配师回复（含思考），防止刷新后丢失这条消息
+                var orchContent = toolMsg.content || '';
+                var orchThinking = toolMsg.reasoning_content || '';
+                if (orchContent || orchThinking) {
+                    dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, thinking, metadata) VALUES (?,?,?,?,?,?)',
+                        [projectId, 'orchestrator', 'assistant', orchContent, orchThinking, '{"type":"chat"}']);
+                    console.log('[Write LLM] 调配师tool_calls回复已存DB contentLen='+orchContent.length+' thinkingLen='+orchThinking.length);
+                }
                 toolMessages.push(toolMsg); // 添加助手消息（含tool_calls）
                 for (var ti = 0; ti < toolMsg.tool_calls.length; ti++) {
                     var tc = toolMsg.tool_calls[ti];
@@ -456,13 +464,13 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                     console.log('[Write LLM] 执行工具: '+toolName);
                     // 缓冲 + 入库系统消息（刷新后可恢复）
                     var inviteMsg = '{agent:orchestrator}调用{agent:'+subAgentType+'}智能体';
-                    saveStreamBuffer(projectId, '', inviteMsg+'\n正在生成中...', streamStartedAt);
+                    saveStreamBuffer(projectId, '', inviteMsg+'\n正在生成中...', streamStartedAt, 'tool_calling', subAgentType);
                     dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, metadata) VALUES (?,?,?,?,?)', [projectId, subAgentType, 'assistant', inviteMsg, '{"type":"system"}']);
                     res.write('data: '+JSON.stringify({type:'tool_start',tool:toolName})+'\n\n');
                     var toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId);
                     console.log('[Write LLM] 工具完成: '+toolName+' '+toolResult.summary);
                     var resultContent = toolResult.result ? (toolResult.result||'').substring(0, 500) : toolResult.summary;
-                    saveStreamBuffer(projectId, resultContent, '✅ '+toolResult.summary, streamStartedAt);
+                    saveStreamBuffer(projectId, resultContent, '✅ '+toolResult.summary, streamStartedAt, 'tool_result', subAgentType);
                     dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, metadata) VALUES (?,?,?,?,?)', [projectId, subAgentType, 'assistant', '✅ '+toolResult.summary, '{"type":"system"}']);
                     res.write('data: '+JSON.stringify({type:'tool_end',tool:toolName,summary:toolResult.summary,content:toolResult.result||''})+'\n\n');
                     toolMessages.push({ role:'tool', tool_call_id:tc.id, content:JSON.stringify(toolResult) });
@@ -564,7 +572,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                             if (!clientGone) res.write('data: '+JSON.stringify({type:'content',delta:delta.content})+'\n\n');
                         }
                         // 写入磁盘缓冲（断线续传用）
-                        saveStreamBuffer(projectId, fullContent, fullThinking, streamStartedAt);
+                        saveStreamBuffer(projectId, fullContent, fullThinking, streamStartedAt, 'final');
                         // 广播给 write-sse 客户端
                         if (delta && (delta.reasoning_content || delta.content)) {
                             broadcastWriteEvent(projectId, {type:delta.reasoning_content?'thinking':'content',delta:delta.reasoning_content||delta.content});

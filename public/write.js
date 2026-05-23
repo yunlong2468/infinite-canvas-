@@ -1,4 +1,4 @@
-console.log("=== write.js v20260523_fix2 已加载 ===");
+console.log("=== write.js v20260523_dual5 已加载 ===");
 // ===== Pane System =====
 var paneGroups = [];
 var paneCounter = 0;
@@ -1463,7 +1463,8 @@ function createStreamingBubble(agentType) {
   var inner = document.querySelector('#subPanelChat .msg-inner');
   var oldThink = inner.querySelector('.msg-thinking');
   if (oldThink) oldThink.remove();
-  var oldStream = inner.querySelector('.msg-streaming');
+  // 只移除调配师流式气泡，保留子智能体气泡（.msg-tool-stream）
+  var oldStream = inner.querySelector('.msg-streaming:not(.msg-tool-stream)');
   if (oldStream) oldStream.remove();
 
   var icon = getAgentIcon(agentType);
@@ -1472,8 +1473,9 @@ function createStreamingBubble(agentType) {
     + '<div class="avatar" style="font-size:17px;">'+icon+'</div>'
     + '<div class="bubble">'
     + '<div style="font-size:11px;color:var(--accent);padding:4px;margin:-4px 0 -6px -4px;cursor:pointer;display:inline-block;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(agentType)+'\')">'+escHtml(name)+'</div>'
-    + '<span class="think-toggle stream-think-toggle" style="cursor:default;">'
-    + '💭 思考中... <span class="stream-timer">等待中...</span> '
+    + '<span class="think-toggle stream-think-toggle" onclick="var b=this.nextElementSibling;var show=b.classList.toggle(\'show\');var lb=this.querySelector(\'.toggle-label\');if(lb)lb.textContent=show?\'💭 收起思考\':\'💭 思考过程\'" style="cursor:pointer;">'
+    + '<span class="toggle-label">💭 思考中...</span> '
+    + '<span class="stream-timer">等待中...</span> '
     + '<span class="typing-dots"><b></b><b></b><b></b></span>'
     + '</span>'
     + '<div class="think-body show stream-think-body" style="max-height:200px;overflow-y:auto;text-align:left;"></div>'
@@ -1482,7 +1484,7 @@ function createStreamingBubble(agentType) {
   var sentinel = inner.querySelector('.msg-sentinel');
   if (sentinel) sentinel.insertAdjacentHTML('beforebegin', html);
   else inner.insertAdjacentHTML('beforeend', html);
-  streamMsgEl = inner.querySelector('.msg-streaming');
+  streamMsgEl = inner.querySelector('.msg-streaming:not(.msg-tool-stream)');
   return streamMsgEl;
 }
 
@@ -1920,14 +1922,16 @@ var saveTimer=null, writingData={title:'',content:''};
 function autoSave(){if(saveTimer)clearTimeout(saveTimer);saveTimer=setTimeout(function(){var ed=document.getElementById('editableContent');writingData.content=ed?ed.innerHTML:'';if(writingData.chapterId){var wc=(ed.textContent||'').replace(/\s/g,'').length;api('PUT','/writing-projects/'+projectId+'/chapters/'+writingData.chapterId,{content_text:writingData.content,word_count:wc}).then(function(){console.log('[Write] 章节自动保存 id='+writingData.chapterId+' 字数='+wc);}).catch(function(e){console.error('[Write] 章节保存失败:',e);});}api('PUT','/writing-projects/'+projectId,writingData).then(function(){console.log('[Write] 项目自动保存完成');}).catch(function(e){console.error('[Write] 项目保存失败:',e);});},1000);}
 
 // ===== 断线续传：轮询磁盘缓冲 =====
-var _bufPollTimer = null, _bufActive = false, _bufStartedAt = 0;
+var _bufPollTimer = null, _bufActive = false, _bufStartedAt = 0, _currentStreamAgent = null;
+var _toolStreamEl = null, _toolStreamAgent = null, _toolSysPhase = ''; // 子智能体气泡跟踪 + 系统消息防刷
 
 function pollStreamBuffer() {
   api('GET', '/writing-projects/'+projectId+'/stream-buffer?_t='+Date.now()).then(function(buf) {
     if (!buf || (!buf.content && !buf.thinking)) { console.log("[Poll] 缓冲为空 _bufActive="+_bufActive+" msgs="+agentMsgs.length);
       if (_bufActive) {
         // 之前活跃→现在空了→流式结束，加载最终DB历史
-        _bufActive = false;
+        _bufActive = false; _currentStreamAgent = null;
+        _closeToolBubble();
         setBusyUI(false);
         stopBufferPolling();
         reloadHistoryFromDB();
@@ -1939,21 +1943,81 @@ function pollStreamBuffer() {
         return;
       }
     }
-    console.log("[Poll] 收到缓冲 c="+(buf.content?buf.content.length:0)+" t="+(buf.thinking?buf.thinking.length:0)+" active="+_bufActive+" busy="+agentBusy); if (agentBusy && !_bufActive) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; }
+    var phase = buf.phase || 'streaming';
+    var agentType = buf.agentType || 'orchestrator';
+    console.log("[Poll] phase="+phase+" agent="+agentType+" c="+(buf.content?buf.content.length:0)+" t="+(buf.thinking?buf.thinking.length:0)+" active="+_bufActive+" busy="+agentBusy);
+
+    // === 工具调用阶段：冻结调配师气泡 + 追加系统消息(仅一次) + 创建子智能体气泡 ===
+    if (phase === 'tool_calling') {
+      _bufActive = true; setBusyUI(true);
+      _currentStreamAgent = agentType;
+      // 冻结调配师气泡：保留在界面上，移除打字动画（流式内容尚未入库，不能删除）
+      if (streamMsgEl) {
+        finalizeThinkingTimer();
+        var dots = streamMsgEl.querySelector('.typing-dots');
+        if (dots) dots.style.display = 'none';
+        var toggle = streamMsgEl.querySelector('.stream-think-toggle');
+        var tLabel = streamMsgEl.querySelector('.toggle-label');
+        if (tLabel) tLabel.textContent = '💭 思考过程';
+        streamMsgEl.style.outline = '';
+      }
+      // 系统消息防刷：仅当phase变化时追加一次
+      if (_toolSysPhase !== 'tool_calling') {
+        _toolSysPhase = 'tool_calling';
+        var sysText = replaceAgentPlaceholders(buf.thinking || '{agent:orchestrator}调用{agent:'+agentType+'}智能体\n正在生成中...');
+        if (ensureMsgInner()) {
+          var inner = document.querySelector('#subPanelChat .msg-inner');
+          var sentinel = inner ? inner.querySelector('.msg-sentinel') : null;
+          if (sentinel) sentinel.insertAdjacentHTML('beforebegin', '<div class="msg system-msg"><span class="sys-text">'+escHtml(sysText)+'</span></div>');
+        }
+      }
+      // 创建子智能体流式气泡（独立于调配师静态消息）
+      _ensureToolBubble(agentType);
+      _bufPollTimer = setTimeout(pollStreamBuffer, 2000);
+      return;
+    }
+
+    // === 工具结果阶段：更新子智能体气泡 ===
+    if (phase === 'tool_result') {
+      _bufActive = true; setBusyUI(true);
+      _currentStreamAgent = agentType;
+      _ensureToolBubble(agentType);
+      // 工具结果摘要只显示在子智能体气泡中
+      if (buf.thinking && _toolStreamEl) {
+        var tBody2 = _toolStreamEl.querySelector('.stream-think-body');
+        if (tBody2) tBody2.innerHTML = escHtml(replaceAgentPlaceholders(buf.thinking));
+        var tLabel = _toolStreamEl.querySelector('.toggle-label');
+        if (tLabel) tLabel.textContent = '💭 结果摘要';
+      }
+      // 显示工具结果内容
+      if (buf.content && _toolStreamEl) {
+        var tContent = _toolStreamEl.querySelector('.stream-content');
+        if (tContent) {
+          tContent.style.display = '';
+          tContent.innerHTML = escHtml(replaceAgentPlaceholders(buf.content)).replace(/\n/g, '<br>');
+        }
+      }
+      _toolSysPhase = ''; // 重置，允许下次tool_calling再发系统消息
+      _bufPollTimer = setTimeout(pollStreamBuffer, 1000);
+      return;
+    }
+
+    // === 默认阶段（thinking/streaming/final）: 主智能体流式气泡 ===
+    if (agentBusy && !_bufActive) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; }
+    // 关闭子智能体气泡（保留在DOM中作为已完成消息）
+    _closeToolBubble();
+    _toolSysPhase = '';
     _bufStartedAt = buf.startedAt || Date.now();
-    if (!_bufActive) {
-      console.log("[Poll] 首次激活，创建气泡... streamMsgEl存在="+!!streamMsgEl);
-      _bufActive = true;
-      setBusyUI(true);
-      streamAccumThinking = '';
-      streamAccumContent = '';
+    if (!_bufActive || _currentStreamAgent !== 'orchestrator') {
+      console.log("[Poll] 首次激活/切换，创建调配师气泡...");
+      _bufActive = true; setBusyUI(true);
+      _currentStreamAgent = 'orchestrator';
+      streamAccumThinking = ''; streamAccumContent = '';
       createStreamingBubble('orchestrator');
-      // 调试：给气泡加红色边框确认可见
-      if (streamMsgEl) { streamMsgEl.style.outline = '2px solid red'; console.log("[Poll] 气泡已创建 visible="+(streamMsgEl.offsetParent!==null)); }
-      // 显示toast确认轮询激活
+      if (streamMsgEl) console.log("[Poll] 气泡已创建 visible="+(streamMsgEl.offsetParent!==null));
       if (typeof toast === 'function') toast('缓冲轮询已激活', 'info');
     }
-    // 更新思考内容 + 基于服务端时间戳的计时器
+    // 更新思考内容
     if (buf.thinking) {
       if (!streamThinkTimer) {
         streamThinkSecs = Math.floor((Date.now() - _bufStartedAt) / 1000);
@@ -1970,7 +2034,7 @@ function pollStreamBuffer() {
         else console.log("[Poll] 思考体不存在 streamMsgEl="+!!streamMsgEl);
       }
     }
-    // 更新正文内容（增量追加，避免每轮全量重渲染）
+    // 更新正文内容
     if (buf.content && buf.content.length > streamAccumContent.length) {
       if (!streamFirstContent) {
         streamFirstContent = true;
@@ -1988,6 +2052,69 @@ function pollStreamBuffer() {
   }).catch(function() {
     _bufPollTimer = setTimeout(pollStreamBuffer, 1000);
   });
+}
+
+// 子智能体流式气泡辅助函数
+function _ensureToolBubble(agentType) {
+  if (_toolStreamEl && _toolStreamAgent === agentType) return;
+  _closeToolBubble();
+  _toolStreamAgent = agentType;
+  ensureMsgInner();
+  var inner = document.querySelector('#subPanelChat .msg-inner');
+  var icon = getAgentIcon(agentType);
+  var name = getAgentName(agentType);
+  var html = '<div class="msg agent-msg msg-streaming msg-tool-stream">'
+    + '<div class="avatar" style="font-size:17px;">'+icon+'</div>'
+    + '<div class="bubble">'
+    + '<div style="font-size:11px;color:var(--accent);padding:4px;margin:-4px 0 -6px -4px;cursor:pointer;display:inline-block;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(agentType)+'\')">'+escHtml(name)+'</div>'
+    + '<span class="think-toggle stream-think-toggle" onclick="var b=this.nextElementSibling;var show=b.classList.toggle(\'show\');var lb=this.querySelector(\'.toggle-label\');if(lb)lb.textContent=show?\'💭 收起\':\'💭 处理中...\'" style="cursor:pointer;">'
+    + '<span class="toggle-label">💭 处理中...</span> '
+    + '<span class="typing-dots"><b></b><b></b><b></b></span>'
+    + '</span>'
+    + '<div class="think-body show stream-think-body" style="max-height:200px;overflow-y:auto;text-align:left;"></div>'
+    + '<div class="stream-content" style="display:none;"></div>'
+    + '</div></div>';
+  var sentinel = inner.querySelector('.msg-sentinel');
+  if (sentinel) sentinel.insertAdjacentHTML('beforebegin', html);
+  else inner.insertAdjacentHTML('beforeend', html);
+  _toolStreamEl = inner.querySelector('.msg-tool-stream');
+}
+
+function _closeToolBubble() {
+  if (_toolStreamEl) {
+    _toolStreamEl.classList.remove('msg-streaming', 'msg-tool-stream');
+    var dots = _toolStreamEl.querySelector('.typing-dots');
+    if (dots) dots.style.display = 'none';
+    _toolStreamEl = null; _toolStreamAgent = null;
+  }
+}
+
+// 确保调配师气泡存在（刷新后可能跳过thinking阶段，需要补建）
+function _ensureOrchBubble() {
+  if (streamMsgEl) return;
+  ensureMsgInner();
+  var inner = document.querySelector('#subPanelChat .msg-inner');
+  if (!inner) return;
+  // 移除旧的调配师流式气泡（如果有残留）
+  var old = inner.querySelector('.msg-streaming:not(.msg-tool-stream)');
+  if (old) old.remove();
+  var icon = getAgentIcon('orchestrator');
+  var name = getAgentName('orchestrator');
+  var html = '<div class="msg agent-msg msg-streaming">'
+    + '<div class="avatar" style="font-size:17px;">'+icon+'</div>'
+    + '<div class="bubble">'
+    + '<div style="font-size:11px;color:var(--accent);padding:4px;margin:-4px 0 -6px -4px;cursor:pointer;display:inline-block;" title="点击改名" onclick="event.stopPropagation();renameAgent(\'orchestrator\')">'+escHtml(name)+'</div>'
+    + '<span class="think-toggle stream-think-toggle" onclick="var b=this.nextElementSibling;b.classList.toggle(\'show\');this.textContent=b.classList.contains(\'show\')?\'💭 收起思考\':\'💭 思考过程\'" style="cursor:pointer;">💭 思考过程</span>'
+    + '<div class="think-body show stream-think-body" style="max-height:200px;overflow-y:auto;text-align:left;">正在分析需求...</div>'
+    + '<div class="stream-content" style="display:none;"></div>'
+    + '</div></div>';
+  var sentinel = inner.querySelector('.msg-sentinel');
+  if (sentinel) sentinel.insertAdjacentHTML('beforebegin', html);
+  else inner.insertAdjacentHTML('beforeend', html);
+  streamMsgEl = inner.querySelector('.msg-streaming:not(.msg-tool-stream)');
+  // 冻结状态：移除打字动画
+  var dots = streamMsgEl ? streamMsgEl.querySelector('.typing-dots') : null;
+  if (dots) dots.style.display = 'none';
 }
 
 // ===== 简单重试：每2秒重新加载历史直到智能体回复出现 =====
