@@ -1922,11 +1922,16 @@ function pollStreamBuffer() {
     console.log("[Poll] 收到缓冲 c="+(buf.content?buf.content.length:0)+" t="+(buf.thinking?buf.thinking.length:0)+" active="+_bufActive+" busy="+agentBusy); if (agentBusy && !_bufActive) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; }
     _bufStartedAt = buf.startedAt || Date.now();
     if (!_bufActive) {
+      console.log("[Poll] 首次激活，创建气泡... streamMsgEl存在="+!!streamMsgEl);
       _bufActive = true;
       setBusyUI(true);
       streamAccumThinking = '';
       streamAccumContent = '';
       createStreamingBubble('orchestrator');
+      // 调试：给气泡加红色边框确认可见
+      if (streamMsgEl) { streamMsgEl.style.outline = '2px solid red'; console.log("[Poll] 气泡已创建 visible="+(streamMsgEl.offsetParent!==null)); }
+      // 显示toast确认轮询激活
+      if (typeof toast === 'function') toast('缓冲轮询已激活', 'info');
     }
     // 更新思考内容 + 基于服务端时间戳的计时器
     if (buf.thinking) {
@@ -1941,7 +1946,8 @@ function pollStreamBuffer() {
       if (buf.thinking !== streamAccumThinking) {
         streamAccumThinking = buf.thinking;
         var body = streamMsgEl ? streamMsgEl.querySelector('.stream-think-body') : null;
-        if (body) body.innerHTML = escHtml(replaceAgentPlaceholders(buf.thinking));
+        if (body) { body.innerHTML = escHtml(replaceAgentPlaceholders(buf.thinking)); console.log("[Poll] 思考已更新 len="+buf.thinking.length); }
+        else console.log("[Poll] 思考体不存在 streamMsgEl="+!!streamMsgEl);
       }
     }
     // 更新正文内容（增量追加，避免每轮全量重渲染）
