@@ -895,9 +895,11 @@ var APICFG = {
 // ==================== Agent 消息系统（从旧 write.js 保留） ====================
 var agentMsgs = [];
 var agentDefaults = {
-  orchestrator: { name:'策划', icon:'🎭', desc:'调配师·采访需求' },
-  outliner:     { name:'大纲', icon:'📋', desc:'生成卷章大纲' },
-  character:    { name:'角色', icon:'👥', desc:'设计角色档案' },
+  orchestrator:       { name:'策划', icon:'🎭', desc:'调配师·采访需求' },
+  outliner:           { name:'大纲', icon:'📋', desc:'生成卷章大纲' },
+  character:          { name:'角色', icon:'👥', desc:'设计角色档案' },
+  generate_outline:   { name:'大纲', icon:'📋', desc:'生成卷章大纲' },
+  generate_characters:{ name:'角色', icon:'👥', desc:'设计角色档案' },
   crawler:      { name:'爬虫', icon:'🕷️', desc:'爬取热门小说' },
   dialog:       { name:'对话', icon:'💬', desc:'角色扮演对话' },
   reviewer:     { name:'审核', icon:'🔍', desc:'一致性检查' },
@@ -1647,6 +1649,21 @@ async function doStreamingCall(text) {
           } else if (evt.type === 'done') {
             if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }
             finalizeStreamingMsg(evt);
+          } else if (evt.type === 'tool_start') {
+            // 调配师调用子智能体 → 显示系统消息
+            var toolNames = {generate_outline:'大纲',generate_characters:'角色',generate_dialog:'对话',crawl_books:'爬虫',review_chapter:'审核',optimize_skill:'技能优化'};
+            var toolLabel = toolNames[evt.tool] || evt.tool;
+            var inviteMsg = {type:'system',content:getAgentName('orchestrator')+' 调用 '+toolLabel+' 智能体',time:Date.now()};
+            agentMsgs.push(inviteMsg);
+            if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(inviteMsg));
+            pendingAgent = {agent:evt.tool,label:toolLabel+'智能体',icon:getAgentIcon(evt.tool)};
+            if (ensureMsgInner()) renderPendingAgent();
+          } else if (evt.type === 'tool_end') {
+            pendingAgent = null;
+            if (ensureMsgInner()) renderPendingAgent();
+            var leaveMsg = {type:'system',content:evt.summary||'子智能体已完成',time:Date.now()};
+            agentMsgs.push(leaveMsg);
+            if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(leaveMsg));
           } else if (evt.type === 'error') {
             if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }
             var errMsg = { type: 'system', content: '⚠️ '+evt.message, time: Date.now() };
