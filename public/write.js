@@ -1,4 +1,4 @@
-console.log('[Write] JS已加载 token='+(typeof token!=='undefined'&&!!token)+' pid='+projectId);
+console.log("=== write.js v1779527803226 已加载 ===");
 // ===== Pane System =====
 var paneGroups = [];
 var paneCounter = 0;
