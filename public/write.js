@@ -1661,9 +1661,20 @@ async function doStreamingCall(text) {
           } else if (evt.type === 'tool_end') {
             pendingAgent = null;
             if (ensureMsgInner()) renderPendingAgent();
+            // 子智能体回复内容作为独立消息展示
+            if (evt.content) {
+              var agentType = evt.tool === 'generate_outline' ? 'outliner' : evt.tool === 'generate_characters' ? 'character' : evt.tool;
+              var toolMsg = {type:'chat',role:'assistant',agent:agentType,content:evt.content,thinking:'',time:Date.now()};
+              agentMsgs.push(toolMsg);
+              if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(toolMsg));
+            }
+            // 结果摘要
             var leaveMsg = {type:'system',content:evt.summary||'子智能体已完成',time:Date.now()};
             agentMsgs.push(leaveMsg);
             if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(leaveMsg));
+            // 刷大纲/角色面板
+            if (evt.tool === 'generate_outline') { setTimeout(function(){loadOutline();}, 500); }
+            if (evt.tool === 'generate_characters') { setTimeout(function(){loadCharacters();}, 500); }
           } else if (evt.type === 'error') {
             if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }
             var errMsg = { type: 'system', content: '⚠️ '+evt.message, time: Date.now() };

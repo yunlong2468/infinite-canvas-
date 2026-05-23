@@ -451,10 +451,8 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                     res.write('data: '+JSON.stringify({type:'tool_start',tool:toolName})+'\n\n');
                     var toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId);
                     console.log('[Write LLM] 工具完成: '+toolName+' '+toolResult.summary);
-                    res.write('data: '+JSON.stringify({type:'tool_end',tool:toolName,summary:toolResult.summary})+'\n\n');
+                    res.write('data: '+JSON.stringify({type:'tool_end',tool:toolName,summary:toolResult.summary,content:toolResult.result||''})+'\n\n');
                     toolMessages.push({ role:'tool', tool_call_id:tc.id, content:JSON.stringify(toolResult) });
-                    // 保存工具调用记录
-                    dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)', [projectId, toolName, 'assistant', toolResult.summary]);
                 }
             } else {
                 // 无工具调用 → 这是最终回复，用流式输出
