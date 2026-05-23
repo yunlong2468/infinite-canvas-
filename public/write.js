@@ -1,4 +1,4 @@
-console.log("=== write.js v1779527803226 已加载 ===");
+console.log("=== write.js v20260523_fix2 已加载 ===");
 // ===== Pane System =====
 var paneGroups = [];
 var paneCounter = 0;
@@ -1193,8 +1193,18 @@ function renderPendingAgent() {
   else inner.insertAdjacentHTML('beforeend',html);
 }
 
+var _renderRetryCount = 0;
 function renderAgentMessages() {
-  var container=document.getElementById('subPanelChat'); if(!container)return;
+  var container=document.getElementById('subPanelChat');
+  console.log('[Render] container='+!!container+' agentMsgs.length='+agentMsgs.length+' agentBusy='+agentBusy+' pendingAgent='+!!pendingAgent);
+  if(!container){
+    if(_renderRetryCount<20){_renderRetryCount++;console.warn('[Render] subPanelChat不存在，延迟重试#'+_renderRetryCount);setTimeout(function(){renderAgentMessages();},500);}
+    else{console.warn('[Render] subPanelChat重试超时，放弃');}
+    return;
+  }
+  _renderRetryCount = 0;
+  var displayStyle=window.getComputedStyle(container).display;
+  console.log('[Render] container.display='+displayStyle+' scrollHeight='+container.scrollHeight);
   var wasAtBottom=container.scrollHeight-container.scrollTop-container.clientHeight<60;
   if(!agentMsgs.length){container.innerHTML='<div class="ap-loading">暂无对话记录<br><span style="font-size:11px;color:var(--text2);">在下方输入消息开始创作</span></div>';unreadCount=0;updateUnreadBadge();return;}
   var html='';
@@ -1222,6 +1232,13 @@ function renderAgentMessages() {
   if(pendingAgent){var pa=pendingAgent;html+='<div class="msg agent-msg"><div class="avatar" style="font-size:17px;background:rgba(5,163,197,0.15);">'+pa.icon+'</div><div class="bubble"><div style="font-size:11px;color:var(--accent);margin-bottom:2px;">'+escHtml(pa.label||pa.agent)+'</div><span class="typing-dots"><b></b><b></b><b></b></span></div></div>';}
   html+='<div class="msg msg-sentinel" style="height:1px;flex-shrink:0;opacity:0;pointer-events:none;"></div>';
   container.innerHTML='<div class="msg-inner">'+html+'</div>';
+  console.log('[Render] innerHTML已设置 DOM消息数='+container.querySelectorAll('.msg').length+' html长度='+html.length);
+  // 检查可见性：offsetHeight/Width + 父元素链
+  var rect=container.getBoundingClientRect();
+  console.log('[Render] rect w='+rect.width+' h='+rect.height+' top='+rect.top+' left='+rect.left+' offsetH='+container.offsetHeight+' clientH='+container.clientHeight);
+  var parent=container.parentElement; var pInfo='';
+  while(parent){pInfo+=parent.tagName+(parent.classList?'.'+Array.from(parent.classList).join('.'):'')+'['+(window.getComputedStyle(parent).display)+'] → ';parent=parent.parentElement;}
+  console.log('[Render] 父元素链: '+pInfo);
   function scrollDown(){if(wasAtBottom||agentMsgs.length<=2){container.scrollTop=container.scrollHeight;markAllRead();}else{lastReadMsgIndex=agentMsgs.length-1;unreadCount=0;updateUnreadBadge();}setupUnreadObserver();}
   requestAnimationFrame(function(){requestAnimationFrame(scrollDown);});
 }
@@ -1909,15 +1926,18 @@ function pollStreamBuffer() {
   api('GET', '/writing-projects/'+projectId+'/stream-buffer?_t='+Date.now()).then(function(buf) {
     if (!buf || (!buf.content && !buf.thinking)) { console.log("[Poll] 缓冲为空 _bufActive="+_bufActive+" msgs="+agentMsgs.length);
       if (_bufActive) {
+        // 之前活跃→现在空了→流式结束，加载最终DB历史
         _bufActive = false;
         setBusyUI(false);
         stopBufferPolling();
         reloadHistoryFromDB();
+        return;
       } else {
-        // 缓冲从未激活→后端可能已完成→直接加载历史
+        // 从未激活→后端可能正在处理→加载DB历史并继续轮询
         reloadHistoryFromDB();
+        _bufPollTimer = setTimeout(pollStreamBuffer, 2000);
+        return;
       }
-      return;
     }
     console.log("[Poll] 收到缓冲 c="+(buf.content?buf.content.length:0)+" t="+(buf.thinking?buf.thinking.length:0)+" active="+_bufActive+" busy="+agentBusy); if (agentBusy && !_bufActive) { _bufPollTimer = setTimeout(pollStreamBuffer, 800); return; }
     _bufStartedAt = buf.startedAt || Date.now();
@@ -1972,7 +1992,7 @@ function pollStreamBuffer() {
 
 // ===== 简单重试：每2秒重新加载历史直到智能体回复出现 =====
 function simpleRetryReload(originalCount, attempts) {
-  if (attempts > 15) { console.log('[Retry] 超时停止'); return; } // 最多30秒
+  if (attempts > 60) { console.log('[Retry] 超时停止（2分钟）'); setBusyUI(false); return; } // 最多2分钟
   setTimeout(function() {
     api('GET', '/writing-projects/'+projectId+'/conversations').then(function(msgs) {
       if (!msgs || msgs.length <= originalCount) {
@@ -1981,18 +2001,35 @@ function simpleRetryReload(originalCount, attempts) {
         return;
       }
       console.log('[Retry] #'+attempts+' 检测到新消息! '+originalCount+'→'+msgs.length);
+      // 打印每条消息摘要用于诊断
+      msgs.forEach(function(m,i){console.log('[Retry] msg['+i+'] role='+m.role+' agent='+m.agent_type+' content前50字='+(m.content||'').substring(0,50)+' metadata='+(m.metadata||''));});
+      // 如果流式活跃中，跳过renderAgentMessages以免破坏流式气泡
+      if (_bufActive) { console.log('[Retry] 流式活跃中，跳过渲染，更新计数继续轮询'); simpleRetryReload(msgs.length, attempts+1); return; }
       agentMsgs = [];
       var savedOpts = loadPickedOptions();
       msgs.forEach(function(m) {
         var meta = {};
         try { meta = JSON.parse(m.metadata || '{}'); } catch(e) {}
-        var msg = { type: meta.type, time: Date.parse(m.created_at || Date.now()) || 'chat', role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '' };
+        var createdTs = m.created_at ? Date.parse(m.created_at) : NaN;
+        var msgTime = isNaN(createdTs) ? Date.now() : createdTs;
+        var msg = { type: meta.type, time: msgTime, role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '' };
         if (m.agent_type === 'orchestrator' && savedOpts[m.content]) msg.pickedOption = savedOpts[m.content];
         agentMsgs.push(msg);
       });
       renderAgentMessages();
+      console.log('[Retry] renderAgentMessages后 DOM消息数='+document.querySelectorAll('#subPanelChat .msg').length+' agentMsgs.length='+agentMsgs.length);
       scrollToBottom();
       setBusyUI(false);
+      // 关键修复：检查末条消息类型，如果对话尚未完成则继续轮询
+      var lastMsg = agentMsgs.length>0 ? agentMsgs[agentMsgs.length-1] : null;
+      var needContinue = lastMsg && (lastMsg.role==='user' || lastMsg.type==='system');
+      console.log('[Retry] 末条 role='+(lastMsg?lastMsg.role:'none')+' type='+(lastMsg?lastMsg.type:'none')+' needContinue='+needContinue);
+      if (needContinue) {
+        console.log('[Retry] 对话未完成，继续轮询...');
+        simpleRetryReload(msgs.length, attempts+1);
+      } else {
+        console.log('[Retry] 对话已完成，停止轮询');
+      }
     }).catch(function() { simpleRetryReload(originalCount, attempts+1); });
   }, 2000);
 }
@@ -2005,20 +2042,27 @@ function replaceAgentPlaceholders(text) {
 }
 
 function reloadHistoryFromDB() { console.log("[Reload] 从DB加载历史...");
-  if (!document.getElementById('subPanelChat')) { console.error("[Reload] subPanelChat不存在!"); }
+  var chatEl = document.getElementById('subPanelChat');
+  console.log("[Reload] subPanelChat存在="+!!chatEl+(chatEl?(' display='+window.getComputedStyle(chatEl).display):''));
+  if (!chatEl) { console.error("[Reload] subPanelChat不存在!"); }
   api('GET', '/writing-projects/'+projectId+'/conversations').then(function(msgs) {
     agentMsgs = [];
     var savedOpts = loadPickedOptions();
     if (msgs && msgs.length) {
-      msgs.forEach(function(m) {
+      console.log("[Reload] 从DB获取到 "+msgs.length+" 条消息");
+      msgs.forEach(function(m, i) {
         var meta = {};
         try { meta = JSON.parse(m.metadata || '{}'); } catch(e) {}
-        var msg = { type: meta.type, time: Date.parse(m.created_at || Date.now()) || 'chat', role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '' };
+        var createdTs = m.created_at ? Date.parse(m.created_at) : NaN;
+        var msgTime = isNaN(createdTs) ? Date.now() : createdTs;
+        var msg = { type: meta.type, time: msgTime, role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '' };
+        console.log("[Reload] msg["+i+"] role="+m.role+" agent="+m.agent_type+" type="+meta.type+" content前50字="+(m.content||'').substring(0,50));
         if (m.agent_type === 'orchestrator' && savedOpts[m.content]) msg.pickedOption = savedOpts[m.content];
         agentMsgs.push(msg);
       });
-    }
+    } else { console.log("[Reload] DB中无消息"); }
     renderAgentMessages();
+    console.log("[Reload] renderAgentMessages后 DOM消息数="+document.querySelectorAll('#subPanelChat .msg').length);
     scrollToBottom();
   }).catch(function(e) { console.error("[Reload] API失败:", e); });
 }
@@ -2038,8 +2082,8 @@ function stopBufferPolling() {
 api('GET','/writing-projects').then(function(projects){var p=projects?projects.find(function(x){return x.id===projectId;}):null;if(!p){window.location.replace('/projects.html');return;}writingData.title=p.title;});
 
 // 加载历史对话
-api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs){agentMsgs=[];var savedOpts=loadPickedOptions();if(msgs&&msgs.length){msgs.forEach(function(m){var meta={};try{meta=JSON.parse(m.metadata||'{}');}catch(e){}var msg={type:meta.type,time:Date.parse(m.created_at||Date.now())||'chat',role:m.role,agent:m.agent_type,content:m.content,thinking:m.thinking||''};if(m.agent_type==='orchestrator'&&savedOpts[m.content]){msg.pickedOption=savedOpts[m.content];}agentMsgs.push(msg);});console.log('[Write] 已加载 '+msgs.length+' 条历史对话');}else{console.log('[Write] 该项目暂无历史对话');}renderAgentMessages();// 检测是否有中断的流式回复（最后一条是用户消息）→ 启动缓冲轮询
-console.log('[Init] 历史加载完成 msgs='+agentMsgs.length+' lastRole='+(agentMsgs.length>0?agentMsgs[agentMsgs.length-1].role:'none'));if(agentMsgs.length>0&&agentMsgs[agentMsgs.length-1].role==='user'){console.log('[Init] 启动简单重试机制');simpleRetryReload(agentMsgs.length, 0);}
+api('GET','/writing-projects/'+projectId+'/conversations').then(function(msgs){agentMsgs=[];var savedOpts=loadPickedOptions();if(msgs&&msgs.length){msgs.forEach(function(m,i){var meta={};try{meta=JSON.parse(m.metadata||'{}');}catch(e){}var createdTs=m.created_at?Date.parse(m.created_at):NaN;var msgTime=isNaN(createdTs)?Date.now():createdTs;var msg={type:meta.type,time:msgTime,role:m.role,agent:m.agent_type,content:m.content,thinking:m.thinking||''};console.log('[Init] msg['+i+'] role='+m.role+' agent='+m.agent_type+' type='+meta.type+' content前50字='+(m.content||'').substring(0,50));if(m.agent_type==='orchestrator'&&savedOpts[m.content]){msg.pickedOption=savedOpts[m.content];}agentMsgs.push(msg);});console.log('[Write] 已加载 '+msgs.length+' 条历史对话');}else{console.log('[Write] 该项目暂无历史对话');}renderAgentMessages();console.log('[Init] renderAgentMessages后 DOM消息数='+document.querySelectorAll('#subPanelChat .msg').length);// 检测是否有中断的流式回复 → 启动缓冲轮询
+var lastMsg=agentMsgs.length>0?agentMsgs[agentMsgs.length-1]:null;console.log('[Init] 历史加载完成 msgs='+agentMsgs.length+' lastRole='+(lastMsg?lastMsg.role:'none')+' lastType='+(lastMsg?lastMsg.type:'none'));if(lastMsg&&(lastMsg.role==='user'||lastMsg.type==='system')){console.log('[Init] 启动双重轮询机制（末条role='+lastMsg.role+' type='+lastMsg.type+'）');simpleRetryReload(agentMsgs.length, 0);pollStreamBuffer();}
 requestAnimationFrame(function(){requestAnimationFrame(function(){var c=document.getElementById('subPanelChat');if(c){c.scrollTop=c.scrollHeight;markAllRead();}});});}).catch(function(err){console.error('[Write] 加载历史对话失败:',err);renderAgentMessages();});
 
 loadOutline(); loadTokenStats();
