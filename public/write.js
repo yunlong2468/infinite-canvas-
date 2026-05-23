@@ -1502,21 +1502,21 @@ function finalizeStreamingMsg(data) {
 async function doStreamingCall(text) {
   var ac = new AbortController(); activeAbortController = ac;
 
-  // 60秒连接超时：如果一直收不到任何事件则报错
+  // 180秒连接超时：DeepSeek深度推理可能需较长时间产生首token
   streamConnTimeout = setTimeout(function() {
     if (!streamFirstContent && streamThinkSecs === 0 && !streamThinkTimer) {
-      console.warn('[Write] 流式连接超时（60s未收到事件）');
+      console.warn('[Write] 流式连接超时（180s未收到事件）');
       if (activeAbortController) activeAbortController.abort();
       cleanupStreamingState();
       var oldStream = document.querySelector('.msg-streaming');
       if (oldStream) oldStream.remove();
-      var to = { type: 'system', content: '⚠️ 连接超时：60秒未收到AI响应，请检查网络或API配置后重试', time: Date.now() };
+      var to = { type: 'system', content: '⚠️ 连接超时：180秒未收到AI响应，请检查网络或API配置后重试', time: Date.now() };
       agentMsgs.push(to);
       appendMsgToDOM(renderSingleMsg(to));
       setBusyUI(false);
       scrollToBottomIfAtBottom();
     }
-  }, 60000);
+  }, 180000);
 
   try {
     var resp = await fetch(API+'/writing-projects/'+projectId+'/llm-call', {
@@ -1556,8 +1556,23 @@ async function doStreamingCall(text) {
         var raw = line.slice(6);
         try {
           var evt = JSON.parse(raw);
-          if (evt.type === 'connected') {
-            // 连接成功，暂不操作
+          if (evt.type === 'connected' || evt.type === 'waiting') {
+            // 连接成功/心跳：重置超时计时器
+            if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }
+            streamConnTimeout = setTimeout(function() {
+              if (!streamFirstContent && streamThinkSecs === 0 && !streamThinkTimer) {
+                console.warn('[Write] 流式连接超时（180s未收到事件）');
+                if (activeAbortController) activeAbortController.abort();
+                cleanupStreamingState();
+                var oldStream2 = document.querySelector('.msg-streaming');
+                if (oldStream2) oldStream2.remove();
+                var to2 = { type: 'system', content: '⚠️ 连接超时：180秒未收到AI响应，请检查网络或API配置后重试', time: Date.now() };
+                agentMsgs.push(to2);
+                appendMsgToDOM(renderSingleMsg(to2));
+                setBusyUI(false);
+                scrollToBottomIfAtBottom();
+              }
+            }, 180000);
           } else if (evt.type === 'thinking') {
             if (!hasStartedThinking) { hasStartedThinking = true; startThinkingTimer(); }
             appendThinkingDelta(evt.delta);

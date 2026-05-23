@@ -346,7 +346,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
         if (isDS) {
             streamReqBody.temperature = 0;
             streamReqBody.thinking = { type: 'enabled' };
-            streamReqBody.reasoning_effort = 'max';
+            streamReqBody.reasoning_effort = 'high';
             streamReqBody.top_p = 1.0;
         } else {
             streamReqBody.temperature = 0.7;
@@ -374,10 +374,10 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
             var fullThinking = '';
             var tokIn = 0, tokOut = 0;
 
-            // 心跳保活（15秒间隔，防止代理超时断连）
+            // 心跳保活（10秒间隔，防止代理超时断连）
             var heartbeat = setInterval(function() {
-                try { res.write(': heartbeat\n\n'); } catch(e) { clearInterval(heartbeat); }
-            }, 15000);
+                try { res.write('data: {"type":"waiting"}\n\n'); } catch(e) { clearInterval(heartbeat); }
+            }, 10000);
 
             while (true) {
                 var chunk = await reader.read();
