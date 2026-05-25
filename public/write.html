@@ -193,21 +193,31 @@ body.zen-mode #zenExit { display:block; }
 .ap-loading { text-align:center; padding:40px; color:var(--text2); font-size:13px; }
 
 /* ===== Editor Panel ===== */
-.ed-topbar { padding:8px 16px; border-bottom:0.5px solid var(--border); display:flex; align-items:center; gap:10px; flex-shrink:0; }
-.ed-topbar .ed-title { font-size:14px; color:var(--text2); flex:1; }
-.ed-topbar button { padding:4px 10px; border-radius:5px; border:0.5px solid var(--border); background:rgba(255,255,255,0.04); color:var(--text2); cursor:pointer; font-size:12px; font-family:inherit; }
-.ed-topbar button:hover { background:rgba(255,255,255,0.08); color:var(--text); }
-.ed-toolbar { display:flex; gap:2px; padding:6px 16px; border-bottom:0.5px solid var(--border); flex-shrink:0; flex-wrap:wrap; }
-.ed-toolbar button, .ed-toolbar select { padding:3px 8px; border-radius:4px; border:0.5px solid transparent; background:transparent; color:var(--text2); cursor:pointer; font-size:12px; font-family:inherit; }
-.ed-toolbar button:hover, .ed-toolbar select:hover { background:rgba(255,255,255,0.06); color:var(--text); }
-.ed-toolbar .sep { width:0.5px; background:var(--border); margin:2px 6px; }
-.ed-body { flex:1; overflow-y:auto; padding:24px 32px; }
+.ed-header { display:flex; align-items:center; gap:12px; padding:12px 20px; border-bottom:0.5px solid var(--border); flex-shrink:0; }
+.ed-title-inp { flex:1; padding:6px 12px; background:rgba(255,255,255,0.03); border:0.5px solid transparent; border-radius:6px; color:var(--text); font-size:16px; font-weight:600; font-family:inherit; outline:none; }
+.ed-title-inp:hover { border-color:rgba(255,255,255,0.08); }
+.ed-title-inp:focus { border-color:var(--accent); background:rgba(255,255,255,0.04); }
+.ed-header-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.ed-wordcount { font-size:11px; color:var(--text2); white-space:nowrap; }
+.ed-btn { padding:6px 12px; border-radius:6px; border:0.5px solid var(--border); background:rgba(255,255,255,0.04); color:var(--text2); cursor:pointer; font-size:12px; font-family:inherit; white-space:nowrap; }
+.ed-btn:hover { background:rgba(255,255,255,0.08); color:var(--text); }
+.ed-btn-save { background:var(--accent); border-color:var(--accent); color:#fff; }
+.ed-btn-save:hover { background:#069fb5; }
+.ed-btn-version { border-color:rgba(255,198,93,0.2); color:#FFC65D; }
+.ed-body { flex:1; overflow-y:auto; padding:32px 40px; position:relative; }
 .ed-body::-webkit-scrollbar { width:6px; }
 .ed-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:3px; }
-.ed-textarea { width:100%; min-height:60vh; background:transparent; border:none; color:var(--text); font-size:16px; line-height:2; font-family:'PingFang SC','Microsoft YaHei','Noto Serif SC',serif; outline:none; resize:none; }
-.ed-placeholder { text-align:center; padding:80px 40px; color:var(--text2); }
-.ed-placeholder .icon { font-size:49px; margin-bottom:16px; opacity:0.3; }
-.ed-placeholder p { font-size:15px; line-height:1.8; }
+.ed-textarea { width:100%; min-height:60vh; background:transparent; border:none; color:var(--text); font-size:16px; line-height:2.2; font-family:'PingFang SC','Microsoft YaHei','Noto Serif SC',serif; outline:none; resize:none; text-indent:2em; }
+.ed-textarea>div,.ed-textarea>p { text-indent:2em; }
+.ed-placeholder { position:absolute; top:80px; left:50%; transform:translateX(-50%); color:var(--text2); font-size:15px; opacity:0.4; pointer-events:none; }
+.ed-footer { display:flex; align-items:center; padding:6px 16px; border-top:0.5px solid var(--border); flex-shrink:0; background:rgba(255,255,255,0.02); }
+.ed-footer-left { display:flex; align-items:center; gap:2px; flex:1; }
+.ed-footer-right { flex-shrink:0; }
+.ed-tbtn { padding:4px 7px; border-radius:4px; border:0.5px solid transparent; background:transparent; color:var(--text2); cursor:pointer; font-size:13px; font-family:inherit; min-width:26px; text-align:center; }
+.ed-tbtn:hover { background:rgba(255,255,255,0.08); color:var(--text); }
+.ed-tsep { width:0.5px; height:16px; background:var(--border); margin:0 4px; }
+.ed-tsel { padding:4px 6px; border-radius:4px; border:0.5px solid transparent; background:transparent; color:var(--text2); cursor:pointer; font-size:12px; font-family:inherit; }
+.ed-tsel:hover { background:rgba(255,255,255,0.06); }
 
 /* ===== Token Panel ===== */
 .tok-bar { border-top:0.5px solid var(--border); padding:6px 10px; flex-shrink:0; cursor:pointer; }
@@ -373,7 +383,7 @@ function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json','
 function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function toast(m,t){var el=document.getElementById('_toast');el.textContent=m;el.style.background=t==='error'?'rgba(245,63,63,0.9)':t==='warn'?'rgba(245,166,35,0.9)':'rgba(0,180,100,0.9)';el.style.color='#fff';el.style.opacity='1';if(el._t)clearTimeout(el._t);el._t=setTimeout(function(){el.style.opacity='0';},2500);}
 function showPrompt(msg,dv,cb){var ov=document.createElement('div');ov.className='prompt-overlay';ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';ov.innerHTML='<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:380px;"><div style="font-size:15px;margin-bottom:12px;color:#fff;">'+escHtml(msg)+'</div><input id="_promptInp" style="width:100%;padding:8px 12px;background:rgba(255,255,255,0.04);border:0.5px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:14px;font-family:inherit;outline:none;" value="'+escHtml(dv||'')+'"><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'.prompt-overlay\').remove()">取消</button><button style="padding:8px 18px;border-radius:6px;border:none;background:#05A3C5;color:#fff;cursor:pointer;font-family:inherit;" onclick="var v=document.getElementById(\'_promptInp\').value;var o2=this.closest(\'.prompt-overlay\');o2.remove();(_pCb||function(){})(v)">确定</button></div></div>';document.body.appendChild(ov);window._pCb=cb;ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});}
-function showConfirm(msg,cb){var ov=document.createElement('div');ov.className='prompt-overlay';ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';ov.innerHTML='<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:380px;"><div style="font-size:15px;margin-bottom:16px;color:#fff;line-height:1.8;white-space:pre-wrap;text-align:center;">'+escHtml(msg)+'</div><div style="display:flex;gap:8px;justify-content:flex-end;"><button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'.prompt-overlay\').remove()">取消</button><button style="padding:8px 18px;border-radius:6px;border:none;background:#F53F3F;color:#fff;cursor:pointer;font-family:inherit;" onclick="var o2=this.closest(\'.prompt-overlay\');o2.remove();(window._cfCb||function(){})()">确认</button></div></div>';document.body.appendChild(ov);window._cfCb=cb;ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});}
+function showConfirm(msg,cb){var ov=document.createElement('div');ov.className='prompt-overlay';ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';ov.innerHTML='<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:380px;"><div style="font-size:15px;margin-bottom:16px;color:#fff;line-height:1.8;white-space:pre-wrap;text-align:center;">'+escHtml(msg)+'</div><div style="display:flex;gap:8px;justify-content:flex-end;"><button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="var o2=this.closest(\'.prompt-overlay\');o2.remove();(window._cfCb||function(){})(false)">取消</button><button style="padding:8px 18px;border-radius:6px;border:none;background:#F53F3F;color:#fff;cursor:pointer;font-family:inherit;" onclick="var o2=this.closest(\'.prompt-overlay\');o2.remove();(window._cfCb||function(){})(true)">确认</button></div></div>';document.body.appendChild(ov);window._cfCb=cb;ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});}
 
 // ===== Keyboard shortcuts =====
 document.addEventListener('keydown', function(e) {
@@ -382,11 +392,12 @@ document.addEventListener('keydown', function(e) {
     else if (e.key==='2') { e.preventDefault(); ACT.focus('chat'); }
     else if (e.key==='3') { e.preventDefault(); ACT.focus('skillConfig'); }
     else if (e.key==='4') { e.preventDefault(); ACT.focus('apiConfig'); }
+    else if (e.key==='s' || e.key==='S') { e.preventDefault(); if (typeof manualSaveChapter === 'function') manualSaveChapter(); }
   }
   if (e.key==='Escape' && document.body.classList.contains('zen-mode')) { ZEN.exit(); }
 });
 </script>
 
-<script src="write.js?v=20260523_diag2"></script>
+<script src="write.js?v=20260523_editor2"></script>
 </body>
 </html>

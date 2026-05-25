@@ -910,13 +910,6 @@ app.put('/api/writing-projects/:id/volumes/:vid', auth, (req, res) => {
     if (sets.length){params.push(req.params.vid);dbRun('UPDATE writing_volumes SET '+sets.join(',')+' WHERE id=?',params);saveDB();}
     res.json({ ok:true });
 });
-app.delete('/api/writing-projects/:id/volumes/:vid', auth, (req, res) => {
-    dbRun('DELETE FROM writing_chapters WHERE volume_id=?', [req.params.vid]);
-    dbRun('DELETE FROM writing_volumes WHERE id=?', [req.params.vid]);
-    saveDB();
-    console.log('[Writing] 删除卷 id='+req.params.vid);
-    res.json({ ok:true });
-});
 
 app.get('/api/writing-projects/:id/chapters', auth, (req, res) => {
     const chapters = queryAll('SELECT * FROM writing_chapters WHERE project_id=? ORDER BY chapter_no', [req.params.id]);
@@ -953,10 +946,46 @@ app.get('/api/writing-projects/:id/token-stats', auth, (req, res) => {
     var cost = (todayCount/1000000) * ((inpPrice+outPrice)/2);
     res.json({ today:todayCount, model:model, cost:cost, inputPrice:inpPrice, outputPrice:outPrice });
 });
+// ==================== 章节版本历史 ====================
+app.post('/api/writing-projects/:id/chapter-versions', auth, (req, res) => {
+    const { chapter_id, content_text, word_count, save_type, label } = req.body;
+    const projectId = parseInt(req.params.id);
+    const id = dbRun('INSERT INTO chapter_versions (project_id, chapter_id, content_text, word_count, save_type, label) VALUES (?,?,?,?,?,?)',
+        [projectId, chapter_id, content_text||'', word_count||0, save_type||'manual', label||'']);
+    saveDB();
+    res.json({ id, created_at: new Date().toISOString() });
+});
+
+app.get('/api/writing-projects/:id/chapter-versions/:cid', auth, (req, res) => {
+    const versions = queryAll('SELECT * FROM chapter_versions WHERE chapter_id=? ORDER BY created_at DESC LIMIT 200', [req.params.cid]);
+    res.json(versions);
+});
+
+app.delete('/api/writing-projects/:id/chapter-versions/:vid', auth, (req, res) => {
+    dbRun('DELETE FROM chapter_versions WHERE id=?', [req.params.vid]);
+    saveDB();
+    res.json({ ok:true });
+});
+
+// 删除卷时级联删除所有章节的版本历史（在DELETE /volumes端点中已处理）
+// 章节删除时级联删除其版本历史
 app.delete('/api/writing-projects/:id/chapters/:cid', auth, (req, res) => {
+    dbRun('DELETE FROM chapter_versions WHERE chapter_id=?', [req.params.cid]);
     dbRun('DELETE FROM writing_chapters WHERE id=?', [req.params.cid]);
     saveDB();
     console.log('[Writing] 删除章 id='+req.params.cid);
+    res.json({ ok:true });
+});
+
+// 卷删除时级联删除章节+版本历史
+app.delete('/api/writing-projects/:id/volumes/:vid', auth, (req, res) => {
+    // 先删所有子章节的版本历史
+    var chaps = queryAll('SELECT id FROM writing_chapters WHERE volume_id=?', [req.params.vid]);
+    chaps.forEach(function(c) { dbRun('DELETE FROM chapter_versions WHERE chapter_id=?', [c.id]); });
+    dbRun('DELETE FROM writing_chapters WHERE volume_id=?', [req.params.vid]);
+    dbRun('DELETE FROM writing_volumes WHERE id=?', [req.params.vid]);
+    saveDB();
+    console.log('[Writing] 删除卷 id='+req.params.vid);
     res.json({ ok:true });
 });
 
@@ -1669,6 +1698,7 @@ async function start() {
     db.run('CREATE TABLE IF NOT EXISTS writing_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, branch_name TEXT DEFAULT \'main\', parent_version_id INTEGER, snapshot_json TEXT NOT NULL, message TEXT DEFAULT \'\', commit_type TEXT DEFAULT \'manual\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_merge_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, source_branch TEXT, target_branch TEXT, conflicts_json TEXT DEFAULT \'[]\', resolution_json TEXT DEFAULT \'{}\', status TEXT DEFAULT \'pending\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT)');
     db.run('CREATE TABLE IF NOT EXISTS user_behavior_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER, action_type TEXT NOT NULL, target_type TEXT, target_id INTEGER, before_data TEXT, after_data TEXT, metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS chapter_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, chapter_id INTEGER NOT NULL, content_text TEXT DEFAULT \'\', word_count INTEGER DEFAULT 0, save_type TEXT DEFAULT \'manual\', label TEXT DEFAULT \'\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_quality_ratings (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, chapter_id INTEGER, user_rating INTEGER, edit_distance_ratio REAL, ai_similarity_score REAL, agent_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS optimized_skills (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, name_cn TEXT NOT NULL, name_en TEXT DEFAULT \'\', description TEXT DEFAULT \'\', content TEXT NOT NULL, json_schema TEXT DEFAULT \'\', source TEXT DEFAULT \'auto_generated\', is_enabled INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
 

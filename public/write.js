@@ -1,4 +1,4 @@
-console.log("=== write.js v20260523_murmur3 已加载 ===");
+console.log("=== write.js v20260523_editor4 已加载 ===");
 // ===== Pane System =====
 var paneGroups = [];
 var paneCounter = 0;
@@ -636,14 +636,25 @@ var RENDER = {
     writingData.chapterId = tab.chapterId || null;
     activeChapterId = tab.chapterId || null;
     container.innerHTML = ''
-      + '<div class="ed-topbar"><span class="ed-title" id="chapTitle">'+escHtml(title)+'</span><span style="font-size:11px;color:var(--text2);" id="wordCount">字数: 0</span><button onclick="saveChapterNow()">💾 保存</button></div>'
-      + '<div class="ed-toolbar">'
-      + '<select onchange="document.execCommand(\'formatBlock\',false,this.value);this.selectedIndex=0;" style="width:80px;"><option value="">正文</option><option value="h2">标题</option><option value="h3">副标题</option></select><span class="sep"></span>'
-      + '<button onclick="document.execCommand(\'bold\')"><b>B</b></button><button onclick="document.execCommand(\'italic\')"><i>I</i></button><button onclick="document.execCommand(\'underline\')"><u>U</u></button><span class="sep"></span>'
-      + '<button onclick="document.execCommand(\'justifyLeft\')">左对齐</button><button onclick="document.execCommand(\'justifyCenter\')">居中</button><span class="sep"></span>'
-      + '<button onclick="document.execCommand(\'insertUnorderedList\')">• 列表</button><button onclick="document.execCommand(\'insertOrderedList\')">1. 列表</button>'
+      // 顶部标题栏
+      + '<div class="ed-header">'
+      + '<input class="ed-title-inp" id="chapTitleInp" value="'+escHtml(title)+'" placeholder="章节标题" onchange="renameChapterTab(this.value)">'
+      + '<div class="ed-header-right">'
+      + '<span class="ed-wordcount" id="wordCount">字数: 0</span>'
+      + '<button class="ed-btn ed-btn-version" onclick="showChapterVersions()" title="历史版本">📋 版本</button>'
+      + '<button class="ed-btn ed-btn-save" onclick="manualSaveChapter()" title="手动保存">💾 保存</button>'
+      + '</div></div>'
+      // 编辑正文区
+      + '<div class="ed-body"><div class="ed-placeholder" id="editorPlaceholder">✍️ 开始创作...</div><div id="editableContent" class="ed-textarea" contenteditable="true" style="display:none;"></div></div>'
+      // 底部固定工具栏（仅撤销/重做）
+      + '<div class="ed-footer">'
+      + '<div class="ed-footer-left">'
+      + '<button class="ed-tbtn" onclick="document.execCommand(\'undo\')" title="撤销">↩</button>'
+      + '<button class="ed-tbtn" onclick="document.execCommand(\'redo\')" title="重做">↪</button>'
       + '</div>'
-      + '<div class="ed-body"><div class="ed-placeholder" id="editorPlaceholder"><div class="icon">✍️</div><p>开始创作...</p></div><div id="editableContent" class="ed-textarea" contenteditable="true" style="display:none;"></div></div>';
+      + '<div class="ed-footer-right">'
+      + '<span style="font-size:10px;color:var(--text2);" id="autoSaveStatus"></span>'
+      + '</div></div>';
     // 加载章节内容
     if (tab.chapterId) {
       var ch = chapters.find(function(c){ return c.id===tab.chapterId; });
@@ -655,16 +666,37 @@ var RENDER = {
         document.getElementById('wordCount').textContent = '字数: '+((ch.content_text||'').replace(/\s/g,'').length);
       }
     }
-    // 绑定编辑事件
+    // 绑定编辑事件（仅更新字数，不触发自动保存）
     var edDiv = document.getElementById('editableContent');
     if (edDiv && !edDiv._bound) {
       edDiv._bound = true;
       edDiv.addEventListener('input', function() {
         var wc = (edDiv.textContent||'').replace(/\s/g,'').length;
         document.getElementById('wordCount').textContent = '字数: '+wc;
-        autoSave();
+        _markDirty();
+      });
+      // placeholder通过CSS overlay显示，编辑器始终可见可编辑
+      edDiv.style.display = 'block';
+      var ph = document.getElementById('editorPlaceholder');
+      if (ph) { ph.style.pointerEvents = 'none'; ph.style.position = 'absolute'; ph.style.top = '80px'; ph.style.left = '50%'; ph.style.transform = 'translateX(-50%)'; ph.style.color = 'var(--text2)'; ph.style.fontSize = '15px'; ph.style.opacity = '0.4'; ph.style.zIndex = '1'; }
+      function _updatePlaceholder() {
+        if (!ph) return;
+        ph.style.display = (edDiv.textContent||'').trim() ? 'none' : '';
+      }
+      edDiv.addEventListener('input', _updatePlaceholder);
+      edDiv.addEventListener('focus', function() { if (ph) ph.style.display = 'none'; });
+      edDiv.addEventListener('blur', _updatePlaceholder);
+      _updatePlaceholder();
+      // Enter键自动缩进2个汉字（仅Enter换行，自动换行不算）
+      edDiv.addEventListener('keydown', function(ev) {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          document.execCommand('insertHTML', false, '<br>&emsp;&emsp;');
+        }
       });
     }
+    // 启动10分钟自动保存定时器
+    _startAutoSaveTimer();
   },
 
   skillConfig: function(container) {
@@ -1862,59 +1894,50 @@ function showVolCtxMenu(e, volId) {
       delBtn.style.cssText = 'display:block;margin:8px auto 0;padding:6px 12px;border-radius:6px;border:0.5px solid rgba(245,63,63,0.3);background:rgba(245,63,63,0.1);color:#F53F3F;cursor:pointer;font-family:inherit;font-size:12px;';
       delBtn.onclick = function() {
         ov.remove();
-        showConfirm('确定删除此卷及其所有章节吗？此操作不可撤销。', function(ok) {
-          if (ok) { api('DELETE', '/writing-projects/'+projectId+'/volumes/'+volId).then(function() { loadOutline(); }); }
+        showDeleteConfirm('确定删除此卷及其所有章节和版本历史吗？此操作不可撤销。', '我确认删除此卷，我知晓删除后内容无法复原', function() {
+          api('DELETE', '/writing-projects/'+projectId+'/volumes/'+volId).then(function() { loadOutline(); });
         });
       };
       ov.querySelector('div > div:last-child').appendChild(delBtn);
     }
   }, 100);
+}
+
+// 删除确认弹窗（需输入指定文字才能确认）
+function showDeleteConfirm(msg, requiredText, cb) {
+  var ov = document.createElement('div'); ov.className = 'prompt-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';
+  ov.innerHTML = '<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:420px;">'
+    + '<div style="font-size:15px;margin-bottom:8px;color:#fff;line-height:1.6;text-align:center;">'+escHtml(msg)+'</div>'
+    + '<div style="font-size:11px;color:var(--text2);margin-bottom:12px;text-align:center;">请输入：<b style="color:#F53F3F;">'+escHtml(requiredText)+'</b></div>'
+    + '<input id="_delCfInp" style="width:100%;padding:8px 12px;background:rgba(255,255,255,0.04);border:0.5px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:14px;font-family:inherit;outline:none;" placeholder="请复制上方文字输入">'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">'
+    + '<button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'.prompt-overlay\').remove()">取消</button>'
+    + '<button id="_delCfBtn" style="padding:8px 18px;border-radius:6px;border:none;background:#3F3F3F;color:#666;cursor:not-allowed;font-family:inherit;" disabled>确认删除</button>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  var inp = document.getElementById('_delCfInp');
+  var btn = document.getElementById('_delCfBtn');
+  inp.addEventListener('input', function() {
+    var ok = inp.value.trim() === requiredText;
+    btn.disabled = !ok;
+    btn.style.background = ok ? '#F53F3F' : '#3F3F3F';
+    btn.style.color = ok ? '#fff' : '#666';
+    btn.style.cursor = ok ? 'pointer' : 'not-allowed';
+  });
+  btn.addEventListener('click', function() {
+    if (!btn.disabled) { ov.remove(); cb(); }
+  });
+  ov.addEventListener('click', function(e) { if (e.target === ov) ov.remove(); });
+  setTimeout(function() { inp.focus(); }, 100);
 }
 
 function showChapCtxMenu(e, chapId) {
-  var titleEl = e.target.closest('.ot-chap');
-  var chapTitle = titleEl ? titleEl.textContent : '';
-  showPrompt('重命名章', chapTitle, function(newName) {
-    if (newName && newName.trim()) {
-      api('PUT', '/writing-projects/'+projectId+'/chapters/'+chapId, {title: newName.trim()}).then(function() { loadOutline(); });
-    }
+  showConfirm('确定删除此章吗？', function(ok) {
+    if (ok) { api('DELETE', '/writing-projects/'+projectId+'/chapters/'+chapId).then(function() { loadOutline(); }); }
   });
-  setTimeout(function() {
-    var ov = document.querySelector('.prompt-overlay');
-    if (ov) {
-      var delBtn = document.createElement('button');
-      delBtn.textContent = '🗑️ 删除此章';
-      delBtn.style.cssText = 'display:block;margin:8px auto 0;padding:6px 12px;border-radius:6px;border:0.5px solid rgba(245,63,63,0.3);background:rgba(245,63,63,0.1);color:#F53F3F;cursor:pointer;font-family:inherit;font-size:12px;';
-      delBtn.onclick = function() {
-        ov.remove();
-        showConfirm('确定删除此章吗？', function(ok) {
-          if (ok) { api('DELETE', '/writing-projects/'+projectId+'/chapters/'+chapId).then(function() { loadOutline(); }); }
-        });
-      };
-      ov.querySelector('div > div:last-child').appendChild(delBtn);
-    }
-  }, 100);
 }
 
-// ===== 章节立即保存 =====
-function saveChapterNow() {
-  var ed = document.getElementById('editableContent');
-  if (!ed) return;
-  writingData.content = ed.innerHTML;
-  if (writingData.chapterId) {
-    var wc = (ed.textContent || '').replace(/\s/g, '').length;
-    api('PUT', '/writing-projects/' + projectId + '/chapters/' + writingData.chapterId, {
-      content_text: writingData.content,
-      word_count: wc
-    }).then(function() {
-      console.log('[Write] 章节保存成功 id=' + writingData.chapterId + ' 字数=' + wc);
-      var wcEl = document.getElementById('wordCount');
-      if (wcEl) wcEl.textContent = '字数: ' + wc;
-    }).catch(function(e) {
-      console.error('[Write] 章节保存失败:', e);
-    });
-  }
-}
 
 function generateOutline() {
   console.log('[Write] 触发大纲生成');
@@ -1937,9 +1960,234 @@ function generateCharacters() {
 // ==================== Token ====================
 function loadTokenStats(){api('GET','/writing-projects/'+projectId+'/token-stats').then(function(stats){if(!stats)return;var el=document.getElementById('tokenToday');if(el)el.textContent=(stats.today||0).toLocaleString();var c=document.getElementById('tokenChart');if(c)c.textContent='今日'+stats.model+': '+stats.today.toLocaleString()+' tokens'+(stats.cost?'\n预估费用: ¥'+stats.cost.toFixed(2):'');var ct=document.getElementById('tokenCost');if(ct)ct.textContent='输入:¥'+stats.inputPrice+'/百万 | 输出:¥'+stats.outputPrice+'/百万';}).catch(function(e){console.error('[Write] Token加载失败:',e);});}
 
-// ==================== 自动保存 ====================
-var saveTimer=null, writingData={title:'',content:''};
-function autoSave(){if(saveTimer)clearTimeout(saveTimer);saveTimer=setTimeout(function(){var ed=document.getElementById('editableContent');writingData.content=ed?ed.innerHTML:'';if(writingData.chapterId){var wc=(ed.textContent||'').replace(/\s/g,'').length;api('PUT','/writing-projects/'+projectId+'/chapters/'+writingData.chapterId,{content_text:writingData.content,word_count:wc}).then(function(){console.log('[Write] 章节自动保存 id='+writingData.chapterId+' 字数='+wc);}).catch(function(e){console.error('[Write] 章节保存失败:',e);});}api('PUT','/writing-projects/'+projectId,writingData).then(function(){console.log('[Write] 项目自动保存完成');}).catch(function(e){console.error('[Write] 项目保存失败:',e);});},1000);}
+// ==================== 新保存系统 ====================
+var _autoSaveTimer = null, _autoSaveMin = 10; // 10分钟自动保存
+var _chapterDirty = false, writingData = {title:'',content:''};
+var _saveTimer=null;
+
+function _markDirty() { _chapterDirty = true; }
+function _clearDirty() { _chapterDirty = false; }
+
+function _startAutoSaveTimer() {
+  if (_autoSaveTimer) clearInterval(_autoSaveTimer);
+  _autoSaveTimer = setInterval(function() {
+    if (_chapterDirty) { _doChapterSave('auto'); }
+  }, _autoSaveMin * 60000);
+}
+
+// 统一保存函数
+function _doChapterSave(saveType, cb) {
+  var ed = document.getElementById('editableContent');
+  if (!ed || !writingData.chapterId) return;
+  var content = ed.innerHTML;
+  var wc = (ed.textContent || '').replace(/\s/g, '').length;
+  api('PUT', '/writing-projects/'+projectId+'/chapters/'+writingData.chapterId, { content_text: content, word_count: wc }).then(function() {
+    // 保存版本快照
+    var label = saveType === 'auto' ? '⏰ 10分钟自动保存' : saveType === 'safety' ? '🛡️ 安全保存' : '✍️ 手动保存';
+    api('POST', '/writing-projects/'+projectId+'/chapter-versions', { chapter_id: writingData.chapterId, content_text: content, word_count: wc, save_type: saveType, label: label });
+    _clearDirty();
+    var st = document.getElementById('autoSaveStatus');
+    if (st) { st.textContent = '已保存 ' + new Date().toLocaleTimeString('zh-CN'); setTimeout(function() { if (st) st.textContent = ''; }, 3000); }
+    if (cb) cb();
+  }).catch(function(e) { console.error('[Write] 保存失败:', e); });
+}
+
+// 手动保存
+function manualSaveChapter() { _doChapterSave('manual', function() { toast('✅ 保存成功'); }); }
+
+// 安全保存（退出/关标签/断连时调用）
+function safetySaveChapter() {
+  if (_chapterDirty) { _doChapterSave('safety'); }
+}
+
+// 重命名章节标签
+function renameChapterTab(newTitle) {
+  if (!newTitle || !writingData.chapterId) return;
+  api('PUT', '/writing-projects/'+projectId+'/chapters/'+writingData.chapterId, { title: newTitle.trim() }).then(function() {
+    loadOutline();
+    // 更新标签名
+    paneGroups.forEach(function(p) {
+      var t = p.tabs.find(function(t) { return t.chapterId === writingData.chapterId; });
+      if (t) { t.label = newTitle.trim(); PANE._renderPane(p); }
+    });
+  });
+}
+
+// ===== 页面退出/关闭/隐藏时安全保存 =====
+window.addEventListener('beforeunload', function() { safetySaveChapter(); });
+document.addEventListener('visibilitychange', function() { if (document.hidden) safetySaveChapter(); });
+
+// ===== 日历样式历史版本弹窗 =====
+var _verData = [], _verSelDate = '', _verPage = 1, _verPageSize = 10;
+
+function showChapterVersions() {
+  if (!writingData.chapterId) return;
+  _verData = []; _verSelDate = ''; _verPage = 1;
+  var ov = document.createElement('div'); ov.className = 'version-overlay'; ov.id = 'versionOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';
+  ov.innerHTML = '<div class="ver-modal" style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;width:660px;height:480px;display:flex;flex-direction:column;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:0.5px solid rgba(255,255,255,0.08);">'
+    + '<span style="font-size:16px;font-weight:600;">📅 章节版本历史</span>'
+    + '<button style="background:none;border:none;color:#A1A1AA;font-size:20px;cursor:pointer;" onclick="document.getElementById(\'versionOverlay\').remove()">&times;</button>'
+    + '</div>'
+    + '<div style="display:flex;flex:1;overflow:hidden;">'
+    + '<div id="verCalendar" style="width:240px;border-right:0.5px solid rgba(255,255,255,0.08);overflow-y:auto;padding:10px;"></div>'
+    + '<div id="verList" style="flex:1;overflow-y:auto;padding:12px;"></div>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function(e) { if (e.target === ov) ov.remove(); });
+  _loadVerData();
+}
+
+function _loadVerData() {
+  api('GET', '/writing-projects/'+projectId+'/chapter-versions/'+writingData.chapterId).then(function(versions) {
+    _verData = versions || [];
+    _verData.sort(function(a, b) { return (b.created_at||'').localeCompare(a.created_at||''); });
+    // 默认选中最新有版本的日期
+    if (_verData.length) _verSelDate = (_verData[0].created_at||'').substring(0,7); // YYYY-MM
+    _renderVerCalendar();
+  });
+}
+
+function _renderVerCalendar() {
+  var cal = document.getElementById('verCalendar');
+  if (!cal) return;
+  // 找出最早和最晚的版本日期
+  var minDate = _verData.length ? (_verData[_verData.length-1].created_at||'').substring(0,7) : '';
+  var maxDate = _verData.length ? (_verData[0].created_at||'').substring(0,7) : '';
+  // 计算有版本的日期集合
+  var verDates = {};
+  _verData.forEach(function(v) { verDates[(v.created_at||'').substring(0,10)] = true; });
+  // 解析选中年月
+  var parts = (_verSelDate || maxDate || '').split('-');
+  var sy = parseInt(parts[0]) || new Date().getFullYear();
+  var sm = parseInt(parts[1]) || new Date().getMonth()+1;
+  // 渲染月份
+  var firstDay = new Date(sy, sm-1, 1).getDay();
+  var daysInMonth = new Date(sy, sm, 0).getDate();
+  var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+  html += '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:16px;" onclick="_verNavMonth(-1)" '+(minDate && _verSelDate <= minDate ? 'disabled style="color:#333;"' : '')+'>◀</button>';
+  html += '<span style="font-size:16px;font-weight:600;">' + sy + '年' + sm + '月</span>';
+  html += '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:16px;" onclick="_verNavMonth(1)" '+(maxDate && _verSelDate >= maxDate ? 'disabled style="color:#333;"' : '')+'>▶</button>';
+  html += '</div>';
+  html += '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;">';
+  ['日','一','二','三','四','五','六'].forEach(function(d) { html += '<div style="font-size:12px;color:var(--text2);padding:3px 0;">'+d+'</div>'; });
+  for (var i = 0; i < firstDay; i++) html += '<div></div>';
+  var todayStr = new Date().toISOString().substring(0,10);
+  for (var d = 1; d <= daysInMonth; d++) {
+    var ds = sy+'-'+String(sm).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+    var hasVer = verDates[ds];
+    var isToday = ds === todayStr;
+    var isSel = ds.substring(0,10) === (_verSelDate||'').substring(0,10);
+    var bg = hasVer ? (isSel ? 'var(--accent)' : 'rgba(5,163,197,0.3)') : 'transparent';
+    var color = hasVer ? '#fff' : 'var(--text2)';
+    var op = hasVer ? '' : 'opacity:0.3;';
+    html += '<div onclick="_verPickDate(\''+ds+'\')" style="cursor:'+(hasVer?'pointer':'default')+';padding:4px 0;border-radius:4px;background:'+bg+';color:'+color+';font-size:13px;'+op+(isToday?'font-weight:700;':'')+'">'+d+'</div>';
+  }
+  html += '</div>';
+  cal.innerHTML = html;
+  _renderVerList();
+}
+
+function _verNavMonth(dir) {
+  var parts = (_verSelDate || '').split('-');
+  var y = parseInt(parts[0]) || new Date().getFullYear();
+  var m = parseInt(parts[1]) || new Date().getMonth()+1;
+  m += dir;
+  if (m < 1) { y--; m = 12; }
+  if (m > 12) { y++; m = 1; }
+  _verSelDate = y + '-' + String(m).padStart(2, '0');
+  _verPage = 1;
+  _renderVerCalendar();
+}
+
+function _verPickDate(ds) {
+  _verSelDate = ds;
+  _verPage = 1;
+  _renderVerCalendar();
+}
+
+function _renderVerList() {
+  var list = document.getElementById('verList');
+  if (!list) return;
+  var selDate = (_verSelDate||'').substring(0,10);
+  var dayVersions = _verData.filter(function(v) { return (v.created_at||'').substring(0,10) === selDate; });
+  if (!dayVersions.length) {
+    // 显示该月所有版本（未选中具体日期时）
+    var selMonth = (_verSelDate||'').substring(0,7);
+    dayVersions = _verData.filter(function(v) { return (v.created_at||'').substring(0,7) === selMonth; });
+  }
+  if (!dayVersions.length) {
+    list.innerHTML = '<div style="text-align:center;color:var(--text2);padding:40px;">📭 该日期无版本记录</div>';
+    return;
+  }
+  // 排序：auto(0) → safety(1) → manual(2)
+  dayVersions.sort(function(a, b) {
+    var order = { auto: 0, safety: 1, manual: 2 };
+    return (order[a.save_type] || 3) - (order[b.save_type] || 3);
+  });
+  var totalPages = Math.ceil(dayVersions.length / _verPageSize);
+  if (_verPage > totalPages) _verPage = totalPages;
+  var start = (_verPage - 1) * _verPageSize;
+  var pageItems = dayVersions.slice(start, start + _verPageSize);
+  var html = '';
+  pageItems.forEach(function(v) {
+    var timeLabel = _fmtVerTime(v.created_at);
+    var icon = v.save_type === 'auto' ? '⏰' : v.save_type === 'safety' ? '🛡️' : '✍️';
+    var bg = v.save_type === 'auto' ? 'rgba(255,198,93,0.08)' : v.save_type === 'safety' ? 'rgba(5,163,197,0.05)' : 'rgba(255,255,255,0.02)';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin:2px 0;background:'+bg+';border:0.5px solid rgba(255,255,255,0.06);border-radius:6px;">';
+    html += '<div><span style="font-size:13px;">'+icon+' '+escHtml(v.label||'版本')+'</span><span style="font-size:11px;color:var(--text2);margin-left:6px;">'+timeLabel+'</span><span style="font-size:11px;color:var(--text2);margin-left:4px;">'+(v.word_count||0)+'字</span></div>';
+    html += '<div><button onclick="event.stopPropagation();_restoreVersion(\''+v.id+'\')" style="padding:3px 12px;border-radius:4px;border:0.5px solid rgba(5,163,197,0.3);background:rgba(5,163,197,0.1);color:var(--accent);cursor:pointer;font-size:12px;font-family:inherit;">恢复</button>';
+    html += '<button onclick="event.stopPropagation();_deleteVersion(\''+v.id+'\')" style="padding:3px 8px;border-radius:4px;border:none;background:transparent;color:var(--text2);cursor:pointer;font-size:12px;margin-left:4px;font-family:inherit;">✕</button></div>';
+    html += '</div>';
+  });
+  // 分页
+  if (totalPages > 1) {
+    html += '<div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-top:10px;font-size:11px;">';
+    html += '<button onclick="_verPage='+Math.max(1,_verPage-1)+';_renderVerList()" style="padding:2px 8px;border:0.5px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text2);cursor:pointer;border-radius:4px;font-family:inherit;" '+( _verPage <=1 ?'disabled':'')+'>◀</button>';
+    html += '<span style="color:var(--text2);">'+_verPage+'/'+totalPages+'</span>';
+    html += '<button onclick="_verPage='+Math.min(totalPages,_verPage+1)+';_renderVerList()" style="padding:2px 8px;border:0.5px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text2);cursor:pointer;border-radius:4px;font-family:inherit;" '+( _verPage >= totalPages ?'disabled':'')+'>▶</button>';
+    html += '</div>';
+  }
+  list.innerHTML = html;
+}
+
+function _fmtVerTime(dateStr) {
+  if (!dateStr) return '';
+  var now = Date.now();
+  var t = Date.parse(dateStr.replace(' ','T')+'Z'); // DB存UTC，必须标记Z解析
+  if (isNaN(t)) return dateStr.substring(11,19);
+  var diff = Math.floor((now - t) / 1000);
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return Math.floor(diff/60) + '分钟前';
+  if (diff < 86400) return Math.floor(diff/3600) + '小时前';
+  return dateStr.substring(0,10);
+}
+
+function _restoreVersion(verId) {
+  if (!writingData.chapterId) return;
+  showConfirm('确定恢复此版本吗？当前未保存的修改将丢失。', function(ok) {
+    if (!ok) return;
+    var v = _verData.find(function(x) { return String(x.id) === String(verId); });
+    if (!v) return;
+    var ed = document.getElementById('editableContent');
+    if (ed) { ed.innerHTML = v.content_text || ''; _markDirty(); }
+    var ph = document.getElementById('editorPlaceholder');
+    if (ph) ph.style.display = v.content_text ? 'none' : '';
+    if (ed) ed.style.display = v.content_text ? 'block' : 'none';
+    var wc = document.getElementById('wordCount');
+    if (wc) wc.textContent = '字数: ' + (v.word_count || 0);
+    toast('已恢复版本');
+    document.getElementById('versionOverlay').remove();
+  });
+}
+
+function _deleteVersion(verId) {
+  showConfirm('确定删除此版本记录吗？', function(ok) {
+    if (!ok) return;
+    api('DELETE', '/writing-projects/'+projectId+'/chapter-versions/'+verId).then(function() { _loadVerData(); });
+  });
+}
 
 // ===== 断线续传：轮询磁盘缓冲 =====
 var _bufPollTimer = null, _bufActive = false, _bufStartedAt = 0, _currentStreamAgent = null;
