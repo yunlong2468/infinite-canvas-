@@ -1,4 +1,4 @@
-console.log("=== write.js v20260523_editor4 已加载 ===");
+console.log("=== write.js v20260523_undo 已加载 ===");
 // ===== Pane System =====
 var paneGroups = [];
 var paneCounter = 0;
@@ -600,7 +600,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 var RENDER = {
   outline: function(container) {
-    container.innerHTML = '<div class="ot-header">📖 项目大纲</div><div class="ot-body" id="otBody"><div class="ot-placeholder">加载中...</div></div><div style="padding:0 8px 8px;"><button onclick="generateOutline()" id="btnGenOutline" class="ot-btn accent">🎬 生成大纲</button></div>';
+    container.innerHTML = '<div class="ot-header">📖 项目大纲</div><div class="ot-body" id="otBody"><div class="ot-placeholder">加载中...</div></div>';
     loadOutline();
   },
 
@@ -614,7 +614,7 @@ var RENDER = {
       + '<span style="font-size:11px;color:var(--text2);" id="onlineAgents">1人</span>'
       + '</div>'
       + '<div id="subPanelChat" class="ch-msgs"><div class="ap-loading">加载历史对话中...</div></div>'
-      + '<div id="subPanelChars" class="ch-msgs" style="display:none;"><button onclick="generateCharacters()" id="btnGenChars" style="padding:6px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px;font-family:inherit;width:calc(100% - 16px);margin:8px;">🎭 生成角色</button><div id="charList"></div></div>'
+      + '<div id="subPanelChars" class="ch-msgs" style="display:none;"><div id="charList"></div></div>'
       + '<div class="ch-input" id="chatInputArea">'
       + '<div class="unread-badge" id="unreadBadge" onclick="scrollToUnread()"></div>'
       + '<div class="mention-dropdown" id="mentionDropdown"></div>'
@@ -1399,6 +1399,35 @@ function editUserMsg(msgIdx) {
   });
 }
 
+// 检测撤回范围内是否有子智能体文件编辑
+function _detectFileChanges(msgIdx) {
+  var endIdx = agentMsgs.length;
+  for (var i = msgIdx + 1; i < agentMsgs.length; i++) {
+    if (agentMsgs[i].role === 'user') { endIdx = i; break; }
+  }
+  var range = agentMsgs.slice(msgIdx, endIdx);
+  var detected = {};
+  range.forEach(function(m) {
+    // 方案A：检查子智能体类型
+    if (m.agent === 'outliner') detected.outline = (detected.outline || 0) + 1;
+    if (m.agent === 'character') detected.character = (detected.character || 0) + 1;
+    // 方案B：检查系统消息中的完成标记
+    if (m.type === 'system' && m.content && m.content.indexOf('✅') >= 0) {
+      if (m.content.indexOf('大纲') >= 0) detected.outlineConfirmed = true;
+      if (m.content.indexOf('角色') >= 0) detected.characterConfirmed = true;
+    }
+  });
+  return detected;
+}
+
+function _buildUndoWarning(detected) {
+  var items = [];
+  if (detected.outline || detected.outlineConfirmed) items.push('• 大纲数据（卷和章节）');
+  if (detected.character || detected.characterConfirmed) items.push('• 角色数据');
+  if (items.length === 0) return null;
+  return '⚠️ 撤回此消息将同时还原以下文件：\n\n' + items.join('\n') + '\n\n此操作不可撤销。';
+}
+
 function undoLastUserMsg() {
   var menu = document.getElementById('userCtxMenu');
   var msgIdx = parseInt(menu.getAttribute('data-msg-idx'));
@@ -1406,23 +1435,40 @@ function undoLastUserMsg() {
   restoreUserSelect();
   if (isNaN(msgIdx) || msgIdx < 0 || msgIdx >= agentMsgs.length) { console.warn('[Undo] invalid msgIdx:', msgIdx); return; }
   if (agentMsgs[msgIdx].role !== 'user') { console.warn('[Undo] msgIdx not a user message'); return; }
-  // 终止进行中的Agent调用，防止撤回后被SSE重新写入
+
+  // 检测文件变更
+  var detected = _detectFileChanges(msgIdx);
+  var warning = _buildUndoWarning(detected);
+
+  if (warning) {
+    // 有文件变更 → 弹窗1
+    showConfirm(warning, function(ok) {
+      if (!ok) return;
+      // 弹窗2：最终确认
+      showConfirm('确定撤回并永久删除上述数据吗？', function(ok2) {
+        if (!ok2) return;
+        _executeUndo(msgIdx);
+      });
+    });
+  } else {
+    // 无文件变更 → 直接撤回
+    _executeUndo(msgIdx);
+  }
+}
+
+function _executeUndo(msgIdx) {
   if (activeAbortController) { activeAbortController.abort(); activeAbortController = null; }
   agentBusy = false; pendingAgent = null;
   setBusyUI(false);
-  // 保存撤回的文本用于重新编辑
   var undoneText = agentMsgs[msgIdx].content || '';
-  // 找到下一条用户消息的索引（或数组末尾）
   var endIdx = agentMsgs.length;
   for (var i = msgIdx + 1; i < agentMsgs.length; i++) {
     if (agentMsgs[i].role === 'user') { endIdx = i; break; }
   }
   var removed = agentMsgs.splice(msgIdx, endIdx - msgIdx);
-  // 清理被删除的智能体消息对应的选项状态，撤回后用户可重新选择
   var removedOptContents = removed.filter(function(m){ return m.role==='assistant' && m.agent==='orchestrator' && m.pickedOption; }).map(function(m){ return m.content; });
   if (removedOptContents.length) clearPickedOptionsForContents(removedOptContents);
   console.log('[Undo] 前端撤回 msgIdx='+msgIdx+' count='+removed.length);
-  // 撤回后，将紧邻前方的调配师消息的选项按钮重置为可选
   for (var k = msgIdx - 1; k >= 0; k--) {
     if (agentMsgs[k].role === 'assistant' && agentMsgs[k].agent === 'orchestrator' && agentMsgs[k].pickedOption) {
       clearPickedOptionsForContents([agentMsgs[k].content]);
@@ -1430,11 +1476,13 @@ function undoLastUserMsg() {
       break;
     }
   }
-  // 插入撤回提示
   agentMsgs.splice(msgIdx, 0, { type:'undo_notice', content:undoneText, time:Date.now() });
-  // 同步后端
   api('POST','/writing-projects/'+projectId+'/undo-last').then(function(r) {
     console.log('[Undo] 后端撤回:', r);
+    if (r && r.rollback && (r.rollback.volumes || r.rollback.chapters || r.rollback.characters)) {
+      toast('已撤回并还原 '+(r.rollback.volumes||0)+'卷 '+(r.rollback.chapters||0)+'章 '+(r.rollback.characters||0)+'角色');
+    }
+    loadOutline(); // 无论回滚多少，刷新大纲面板
   }).catch(function(e) { console.error('[Undo] 后端撤回失败:', e); });
   renderAgentMessages();
   requestAnimationFrame(function(){ var c=document.getElementById('subPanelChat'); if(c)c.scrollTop=c.scrollHeight; });
@@ -1875,7 +1923,7 @@ function renderOutlineTree() {
 }
 
 function toggleVolume(el){var arrow=el.querySelector('.ot-vol-arrow'),chaps=el.nextElementSibling;if(chaps&&chaps.classList.contains('ot-chapters')){var hidden=chaps.style.display==='none';chaps.style.display=hidden?'block':'none';arrow.textContent=hidden?'▼':'▶';}}
-function addVolume(){api('POST','/writing-projects/'+projectId+'/volumes',{title:'新卷'}).then(function(r){console.log('[Write] 新建卷 id='+(r&&r.id));loadOutline();}).catch(function(e){console.error('[Write] 新建卷失败:',e);});}
+function addVolume(){showPrompt('新建卷', '新卷', function(name) { if (name && name.trim()) { api('POST','/writing-projects/'+projectId+'/volumes',{title:name.trim()}).then(function(r){console.log('[Write] 新建卷 id='+(r&&r.id));loadOutline();}).catch(function(e){console.error('[Write] 新建卷失败:',e);}); } });}
 function addChapter(volumeId){api('POST','/writing-projects/'+projectId+'/chapters',{volume_id:volumeId,title:'新章'}).then(function(r){console.log('[Write] 新建章 id='+(r&&r.id)+' vid='+volumeId);loadOutline();}).catch(function(e){console.error('[Write] 新建章失败:',e);});}
 
 // ===== 卷/章右键菜单 =====
@@ -1895,9 +1943,16 @@ function showVolCtxMenu(e, volId) {
       delBtn.style.cssText = 'display:block;margin:8px auto 0;padding:6px 12px;border-radius:6px;border:0.5px solid rgba(245,63,63,0.3);background:rgba(245,63,63,0.1);color:#F53F3F;cursor:pointer;font-family:inherit;font-size:12px;';
       delBtn.onclick = function() {
         ov.remove();
-        showDeleteConfirm('确定删除此卷及其所有章节和版本历史吗？此操作不可撤销。', '我确认删除此卷，我知晓删除后内容无法复原', function() {
-          api('DELETE', '/writing-projects/'+projectId+'/volumes/'+volId).then(function() { loadOutline(); });
-        });
+        var hasChaps = chapters.some(function(c){ return c.volume_id === volId; });
+        if (hasChaps) {
+          showDeleteConfirm('确定删除此卷及其所有章节和版本历史吗？此操作不可撤销。', '我确认删除此卷，我知晓删除后内容无法复原', function() {
+            api('DELETE', '/writing-projects/'+projectId+'/volumes/'+volId).then(function() { loadOutline(); });
+          });
+        } else {
+          showConfirm('确定删除空卷「'+volTitle+'」吗？', function(ok) {
+            if (ok) { api('DELETE', '/writing-projects/'+projectId+'/volumes/'+volId).then(function() { loadOutline(); }); }
+          });
+        }
       };
       ov.querySelector('div > div:last-child').appendChild(delBtn);
     }
@@ -1949,7 +2004,7 @@ function generateOutline() {
 // ==================== 角色管理 ====================
 function loadCharacters() {
   console.log('[Write] 加载角色列表');
-  api('GET','/writing-projects/'+projectId+'/characters').then(function(chars){var list=document.getElementById('charList');if(!list)return;if(!chars||!chars.length){list.innerHTML='<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px;">暂无角色，点击上方按钮生成</div>';return;}var html='';chars.forEach(function(c){try{var profile=JSON.parse(c.profile_json||'{}');}catch(e){profile={};}html+='<div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:8px;font-size:12px;margin-bottom:4px;"><div style="font-weight:600;margin-bottom:4px;">'+escHtml(c.name)+(c.aliases?' ('+escHtml(c.aliases)+')':'')+'</div>'+(profile['外貌']?'<div style="color:var(--text2);font-size:11px;">'+escHtml(profile['外貌'].substring(0,60))+'...</div>':'')+'</div>';});list.innerHTML=html;}).catch(function(e){console.error('[Write] 角色加载失败:',e);});
+  api('GET','/writing-projects/'+projectId+'/characters').then(function(chars){var list=document.getElementById('charList');if(!list)return;if(!chars||!chars.length){list.innerHTML='<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px;">暂无角色</div>';return;}var html='';chars.forEach(function(c){try{var profile=JSON.parse(c.profile_json||'{}');}catch(e){profile={};}html+='<div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:8px;font-size:12px;margin-bottom:4px;"><div style="font-weight:600;margin-bottom:4px;">'+escHtml(c.name)+(c.aliases?' ('+escHtml(c.aliases)+')':'')+'</div>'+(profile['外貌']?'<div style="color:var(--text2);font-size:11px;">'+escHtml(profile['外貌'].substring(0,60))+'...</div>':'')+'</div>';});list.innerHTML=html;}).catch(function(e){console.error('[Write] 角色加载失败:',e);});
 }
 
 function generateCharacters() {

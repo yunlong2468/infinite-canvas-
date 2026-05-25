@@ -245,12 +245,36 @@ app.post('/api/writing-projects/:id/conversations', auth, (req, res) => {
 app.post('/api/writing-projects/:id/undo-last', auth, (req, res) => {
     try {
         var projectId = parseInt(req.params.id);
-        var lastUser = queryOne('SELECT id FROM agent_conversations WHERE project_id=? AND role=? ORDER BY id DESC LIMIT 1', [projectId, 'user']);
+        var lastUser = queryOne('SELECT id, created_at FROM agent_conversations WHERE project_id=? AND role=? ORDER BY id DESC LIMIT 1', [projectId, 'user']);
         if (!lastUser) return res.json({ ok: true, deleted: 0 });
+        // 找到上一条用户消息的时间戳作为安全点
+        var safePoint = queryOne('SELECT created_at FROM agent_conversations WHERE project_id=? AND role=? AND id < ? ORDER BY id DESC LIMIT 1', [projectId, 'user', lastUser.id]);
+        var safeTime = safePoint ? safePoint.created_at : lastUser.created_at;
+        // 删除对话记录
         db.run('DELETE FROM agent_conversations WHERE project_id=? AND id>=?', [projectId, lastUser.id]);
+        // 回滚文件数据
+        var rollback = { volumes: 0, chapters: 0, characters: 0 };
+        if (safePoint) {
+            // 删前捕获：哪些卷会被波及（在删章之前查询）
+            var affectedVolIds = queryAll('SELECT DISTINCT volume_id FROM writing_chapters WHERE project_id=? AND created_at > ?', [projectId, safeTime]);
+            // 统计并删除安全点之后创建的章和角色
+            rollback.chapters = (queryAll('SELECT id FROM writing_chapters WHERE project_id=? AND created_at > ?', [projectId, safeTime])).length;
+            rollback.characters = (queryAll('SELECT id FROM writing_characters WHERE project_id=? AND created_at > ?', [projectId, safeTime])).length;
+            db.run('DELETE FROM chapter_versions WHERE project_id=? AND created_at > ?', [projectId, safeTime]);
+            db.run('DELETE FROM writing_chapters WHERE project_id=? AND created_at > ?', [projectId, safeTime]);
+            db.run('DELETE FROM writing_characters WHERE project_id=? AND created_at > ?', [projectId, safeTime]);
+            // 仅清理波及范围内变为空的卷
+            affectedVolIds.forEach(function(vr) {
+                var remain = queryOne('SELECT COUNT(*) as cnt FROM writing_chapters WHERE volume_id=?', [vr.volume_id]);
+                if (!remain || remain.cnt === 0) {
+                    db.run('DELETE FROM writing_volumes WHERE id=?', [vr.volume_id]);
+                    rollback.volumes++;
+                }
+            });
+        }
         saveDB();
-        console.log('[Undo] 项目 '+projectId+' 撤回消息组 from_id='+lastUser.id);
-        res.json({ ok: true, deleted: 1 });
+        console.log('[Undo] 项目 '+projectId+' 撤回消息组+回滚 卷:'+rollback.volumes+' 章:'+rollback.chapters+' 角色:'+rollback.characters);
+        res.json({ ok: true, deleted: 1, rollback: rollback });
     } catch(e) { console.error('[Undo] error:', e); res.status(500).json({ error: e.message }); }
 });
 
