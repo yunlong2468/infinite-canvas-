@@ -28,9 +28,10 @@ function findFixedTab(type) {
 var PANE = {
   init: function() {
     paneContainer = document.getElementById('paneContainer');
-    // 初始：一个窗格，打开大纲
+    // 初始：一个窗格，打开大纲+对话（保证subPanelChat始终存在）
     var p = this.create(false);
     this.addTab(p.id, { type:'outline' });
+    this.addTab(p.id, { type:'chat' });
     this.saveLayout();
   },
 
