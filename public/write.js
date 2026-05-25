@@ -980,14 +980,24 @@ function renameAgent(id) {
 var mentionAgents = [];
 function loadMentionList() {
   mentionAgents = [];
+  var seenNames = {};
   Object.keys(agentDefaults).forEach(function(id) {
     var a = agentDefaults[id];
+    if (seenNames[a.name]) return; // 同名去重（如character和generate_characters）
+    seenNames[a.name] = true;
     mentionAgents.push({ id:id, name:a.name, icon:a.icon, desc:a.desc });
   });
 }
 loadAgentNames(); loadMentionList();
 
+// 开发者模式（控制@提及等高级功能）
+var DEV_MODE = {
+  get enabled() { return localStorage.getItem('write_dev_mode') === '1'; },
+  set enabled(v) { localStorage.setItem('write_dev_mode', v ? '1' : '0'); }
+};
+
 function handleMentionInput() {
+  if (!DEV_MODE.enabled) return;
   var inp = document.getElementById('agentInput');
   if (!inp) return;
   var val = inp.value, cursorPos = inp.selectionStart;
@@ -1017,6 +1027,29 @@ function selectMention(agentId, atIdx) {
   document.getElementById('mentionDropdown').classList.remove('show');
   inp.focus(); inp.selectionStart=inp.selectionEnd=atIdx+name.length+2;
 }
+function showSettings() {
+  var ov = document.createElement('div');
+  ov.className = 'prompt-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';
+  var devOn = DEV_MODE.enabled;
+  ov.innerHTML = '<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:400px;">'
+    +'<div style="font-size:15px;margin-bottom:16px;color:#fff;">⚙️ 设置</div>'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;margin-bottom:16px;">'
+    +'<div><div style="font-size:13px;color:#fff;">开发者选项</div><div style="font-size:11px;color:var(--text2);margin-top:2px;">启用后可在输入框用 @ 唤醒子智能体加入群聊</div></div>'
+    +'<div id="devToggle" style="width:44px;height:24px;border-radius:12px;cursor:pointer;transition:background 0.2s;position:relative;'+(devOn?'background:var(--accent);':'background:rgba(255,255,255,0.15);')+'"><div style="position:absolute;top:2px;'+(devOn?'right:2px;':'left:2px;')+'width:20px;height:20px;border-radius:50%;background:#fff;transition:all 0.2s;"></div></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end;">'
+    +'<button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'.prompt-overlay\').remove()">关闭</button>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+  document.getElementById('devToggle').addEventListener('click', function() {
+    DEV_MODE.enabled = !DEV_MODE.enabled;
+    ov.remove();
+    showSettings(); // 刷新面板
+  });
+  ov.addEventListener('click', function(e) { if (e.target===ov) ov.remove(); });
+}
+
 function autoGrowInput() {
   var ta = document.getElementById('agentInput'); if (!ta) return;
   ta.style.height = 'auto';

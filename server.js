@@ -397,8 +397,12 @@ function executeToolAsync(toolName, argsJson, projectId, userId) {
                 if (result.error) { resolve({ error: result.error, summary: '角色生成失败: '+result.error }); return; }
                 var summary = '角色已生成';
                 try {
-                    var clean = (result.content||'').replace(/```json\s*|\s*```/g,'').trim();
-                    var chars = JSON.parse(clean);
+                    var raw = result.content || '';
+                    var m = raw.match(/```json\s*([\s\S]*?)```/);
+                    var jsonStr = m ? m[1].trim() : raw.trim();
+                    var start = jsonStr.indexOf('{'), end = jsonStr.lastIndexOf('}');
+                    if (start >= 0 && end > start) jsonStr = jsonStr.substring(start, end + 1);
+                    var chars = JSON.parse(jsonStr);
                     if (chars && chars['角色']) {
                         chars['角色'].forEach(function(c) {
                             dbRun('INSERT INTO writing_characters (project_id, name, profile_json) VALUES (?,?,?)', [projectId, c['姓名']||'未命名', JSON.stringify(c)]);
@@ -406,7 +410,7 @@ function executeToolAsync(toolName, argsJson, projectId, userId) {
                         saveDB();
                         summary = '已生成 '+chars['角色'].length+' 个角色';
                     }
-                } catch(e) {}
+                } catch(e) { console.error('[Writing 角色] 保存失败:', e.message); summary = '角色保存失败: '+e.message; }
                 resolve({ result: result.content, summary: summary });
             });
         } else if (tl.indexOf('crawl') >= 0 || toolName === 'crawl_books') {
