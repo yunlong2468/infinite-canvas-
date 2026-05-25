@@ -298,7 +298,7 @@ function formatTime(d) {
     if (diff < 86400000) return Math.floor(diff/3600000)+' 小时前';
     return d.toLocaleDateString('zh-CN');
 }
-function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function logout() {
   showConfirm('确定要退出登录吗？', function(ok) {
     if (ok) { localStorage.removeItem('canvas_token'); localStorage.removeItem('canvas_username'); window.location.replace('/login.html'); }

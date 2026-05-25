@@ -935,6 +935,8 @@ var agentDefaults = {
   generate_outline:   { name:'大纲', icon:'📋', desc:'生成卷章大纲' },
   generate_characters:{ name:'角色', icon:'👥', desc:'设计角色档案' },
   crawler:      { name:'爬虫', icon:'🕷️', desc:'爬取热门小说' },
+  skill_optimizer: { name:'技能优化', icon:'🧠', desc:'分析习惯产出Skill' },
+  load_skill:   { name:'技能', icon:'📖', desc:'读取技能指南' },
   dialog:       { name:'对话', icon:'💬', desc:'角色扮演对话' },
   reviewer:     { name:'审核', icon:'🔍', desc:'一致性检查' },
   skill_optimizer: { name:'技能优化', icon:'🧠', desc:'分析习惯产出Skill' },
@@ -947,6 +949,26 @@ function loadAgentNames() {
 function saveAgentNames() { localStorage.setItem('write_agent_names', JSON.stringify(agentDefaults)); }
 function getAgentName(id) { return (agentDefaults[id]&&agentDefaults[id].name) || id; }
 function getAgentIcon(id) { return (agentDefaults[id]&&agentDefaults[id].icon) || '🤖'; }
+
+// 统一工具名→Agent类型映射（防止LLM返回不同名称）
+function _resolveToolAgent(toolName) {
+  if (!toolName) return toolName;
+  var lower = toolName.toLowerCase();
+  if (lower.indexOf('outline') >= 0) return 'outliner';
+  if (lower.indexOf('character') >= 0) return 'character';
+  if (lower.indexOf('crawl') >= 0) return 'crawler';
+  if (lower.indexOf('skill_optimizer') >= 0) return 'skill_optimizer';
+  if (lower.indexOf('load_skill') >= 0 || lower.indexOf('skill') >= 0) return 'load_skill';
+  return toolName;
+}
+
+function _updateOnlineCount() {
+  var el = document.getElementById('onlineAgents'); if (!el) return;
+  var count = 1; // 用户始终在线
+  if (agentBusy || pendingAgent || _currentStreamAgent) count++; // 调配师在活跃
+  if (_toolStreamEl && _toolStreamAgent) count++; // 子智能体在活跃
+  el.textContent = count + '人';
+}
 function renameAgent(id) {
   var cur = getAgentName(id);
   showPrompt('修改「'+id+'」的显示名:', cur, function(nn) {
@@ -1634,17 +1656,14 @@ function appendContentDelta(delta) {
 
 function finalizeStreamingMsg(data) {
   if (streamThinkTimer) { clearInterval(streamThinkTimer); streamThinkTimer = null; }
-  if (!streamMsgEl) return;
 
   var content = data.content || '';
   var thinking = data.thinking || '';
 
-  // 如果只有思考没有正文（异常情况），也要完成计时
   if (thinking && !streamFirstContent) {
     finalizeThinkingTimer();
   }
 
-  // 构建最终消息对象
   var msg = {
     type: 'chat',
     role: 'assistant',
@@ -1655,12 +1674,10 @@ function finalizeStreamingMsg(data) {
   };
   agentMsgs.push(msg);
 
-  // 用正式渲染替换流式bubble
-  var finalHtml = renderSingleMsg(msg);
-  var streamEl = document.querySelector('.msg-streaming');
-  if (streamEl) {
-    streamEl.outerHTML = finalHtml;
-  }
+  // 移除旧的frozen气泡，追加正式渲染到最底部
+  var frozen = document.querySelector('.msg-streaming:not(.msg-tool-stream)');
+  if (frozen) frozen.remove();
+  if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(msg));
 
   streamMsgEl = null;
   streamFirstContent = false;
@@ -1728,6 +1745,7 @@ async function doStreamingCall(text) {
           if (evt.type === 'connected' || evt.type === 'waiting') {
             // 连接成功/心跳：重置超时计时器
             if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }
+            if (evt.type === 'connected') _updateOnlineCount();
             streamConnTimeout = setTimeout(function() {
               if (!streamFirstContent && streamThinkSecs === 0 && !streamThinkTimer) {
                 console.warn('[Write] 流式连接超时（180s未收到事件）');
@@ -1752,21 +1770,31 @@ async function doStreamingCall(text) {
             finalizeStreamingMsg(evt);
           } else if (evt.type === 'tool_start') {
             // 调配师调用子智能体 → 显示系统消息 + 子智能体气泡 + 启动短语轮播
-            var toolNames = {generate_outline:'大纲',generate_characters:'角色',generate_dialog:'对话',crawl_books:'爬虫',review_chapter:'审核',optimize_skill:'技能优化'};
-            var toolLabel = toolNames[evt.tool] || evt.tool;
+            var toolAgentType = _resolveToolAgent(evt.tool);
+            var toolLabel = getAgentName(toolAgentType);
             var inviteMsg = {type:'system',content:getAgentName('orchestrator')+' 调用 '+toolLabel+' 智能体',time:Date.now()};
             agentMsgs.push(inviteMsg);
             if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(inviteMsg));
-            // 创建子智能体流式气泡并启动牛马碎碎念轮播
-            var toolAgentType = evt.tool === 'generate_outline' ? 'outliner' : evt.tool === 'generate_characters' ? 'character' : evt.tool === 'crawl_books' ? 'crawler' : evt.tool;
-            _ensureToolBubble(toolAgentType);
-            _startPhraseRotation();
-            pendingAgent = null;
+            // load_skill 不需要子智能体气泡，只显示系统消息
+            if (toolAgentType === 'load_skill') {
+              _updateOnlineCount();
+              pendingAgent = null;
+            } else {
+              _ensureToolBubble(toolAgentType);
+              _startPhraseRotation();
+              _updateOnlineCount();
+              pendingAgent = null;
+            }
           } else if (evt.type === 'tool_end') {
             _stopPhraseRotation();
-            var toolAgentType = evt.tool === 'generate_outline' ? 'outliner' : evt.tool === 'generate_characters' ? 'character' : evt.tool === 'crawl_books' ? 'crawler' : evt.tool;
-            // 更新子智能体气泡为实际结果
-            if (_toolStreamEl) {
+            var toolAgentType = _resolveToolAgent(evt.tool);
+            // load_skill直接展示为系统消息
+            if (toolAgentType === 'load_skill') {
+              var skillMsg = {type:'system',content:evt.summary||'技能已加载',time:Date.now()};
+              agentMsgs.push(skillMsg);
+              if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(skillMsg));
+              _updateOnlineCount();
+            } else if (_toolStreamEl) {
               var tBody = _toolStreamEl.querySelector('.stream-think-body');
               if (tBody) tBody.innerHTML = escHtml(evt.summary || '已完成');
               var tLabel = _toolStreamEl.querySelector('.toggle-label');
@@ -1782,6 +1810,7 @@ async function doStreamingCall(text) {
               agentMsgs.push(leaveMsg);
               // 关闭流式状态，保留DOM
               _closeToolBubble();
+              _updateOnlineCount();
             } else {
               // 兜底：气泡不存在时用旧逻辑
               if (evt.content) {
@@ -1794,8 +1823,9 @@ async function doStreamingCall(text) {
               if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(leaveMsg2));
             }
             // 刷大纲/角色面板
-            if (evt.tool === 'generate_outline') { setTimeout(function(){loadOutline();}, 500); }
-            if (evt.tool === 'generate_characters') { setTimeout(function(){loadCharacters();}, 500); }
+            var agentType = _resolveToolAgent(evt.tool);
+            if (agentType === 'outliner') { setTimeout(function(){loadOutline();}, 500); }
+            if (agentType === 'character') { setTimeout(function(){loadCharacters();}, 500); }
           } else if (evt.type === 'error') {
             if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }
             var errMsg = { type: 'system', content: '⚠️ '+evt.message, time: Date.now() };
@@ -2564,7 +2594,7 @@ function stopBufferPolling() {
 // ==================== SSE ====================
 (function(){var sse=new EventSource('/api/sse?token='+encodeURIComponent(token));sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='kicked'){localStorage.removeItem('canvas_token');localStorage.removeItem('canvas_username');window.location.replace('/login.html?reason=kicked');}}catch(ex){}});sse.onerror=function(){console.log('[Write] 踢出SSE断线，自动重连中...');};})();
 
-(function(){var sseUrl='/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);var sse=new EventSource(sseUrl);sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='connected'){console.log('[Write] SSE已连接 projectId='+d.projectId);return;}if(d.type==='agent-message'&&d.msg){if(!agentBusy){var sseMsg={type:'chat',role:'assistant',time:Date.now(),agent:d.msg.agent_type,content:d.msg.content,thinking:d.msg.thinking||''};agentMsgs.push(sseMsg);appendMsgToDOM(renderSingleMsg(sseMsg));scrollToBottomIfAtBottom();}}}catch(ex){}});sse.onerror=function(){console.log('[Write] Agent SSE断线，自动重连中...');};window._writeSse=sse;})();
+(function(){var sseUrl='/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);var sse=new EventSource(sseUrl);sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='connected'){console.log('[Write] SSE已连接 projectId='+d.projectId);_updateOnlineCount();return;}if(d.type==='agent-message'&&d.msg){if(!agentBusy){var sseMsg={type:'chat',role:'assistant',time:Date.now(),agent:d.msg.agent_type,content:d.msg.content,thinking:d.msg.thinking||''};agentMsgs.push(sseMsg);appendMsgToDOM(renderSingleMsg(sseMsg));scrollToBottomIfAtBottom();}}}catch(ex){}});sse.onerror=function(){console.log('[Write] Agent SSE断线，自动重连中...');};window._writeSse=sse;})();
 
 // 页面刷新/关闭前通知后端终止SSE连接（让后端检测req.aborted并转入后台）
 
