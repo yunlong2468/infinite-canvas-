@@ -1758,13 +1758,13 @@ async function doStreamingCall(text) {
             agentMsgs.push(inviteMsg);
             if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(inviteMsg));
             // 创建子智能体流式气泡并启动牛马碎碎念轮播
-            var toolAgentType = evt.tool === 'generate_outline' ? 'outliner' : evt.tool === 'generate_characters' ? 'character' : evt.tool;
+            var toolAgentType = evt.tool === 'generate_outline' ? 'outliner' : evt.tool === 'generate_characters' ? 'character' : evt.tool === 'crawl_books' ? 'crawler' : evt.tool;
             _ensureToolBubble(toolAgentType);
             _startPhraseRotation();
             pendingAgent = null;
           } else if (evt.type === 'tool_end') {
             _stopPhraseRotation();
-            var toolAgentType = evt.tool === 'generate_outline' ? 'outliner' : evt.tool === 'generate_characters' ? 'character' : evt.tool;
+            var toolAgentType = evt.tool === 'generate_outline' ? 'outliner' : evt.tool === 'generate_characters' ? 'character' : evt.tool === 'crawl_books' ? 'crawler' : evt.tool;
             // 更新子智能体气泡为实际结果
             if (_toolStreamEl) {
               var tBody = _toolStreamEl.querySelector('.stream-think-body');
