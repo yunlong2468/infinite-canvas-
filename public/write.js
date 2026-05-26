@@ -2454,17 +2454,41 @@ var _toolPhrases = [
   "等我发财就炒了老板", "疯狂输出中，生人勿近", "这破班不上也罢",
   "方案改到怀疑人生了", "不想上班，只想躺平", "工资条比脸还干净",
   "看在钱的份上，忍了", "再催单我就原地爆炸", "头发快掉光了，愁",
-  "干最多活拿最少钱", "退休？遥遥无期...", "好的老板，马上改！"
+  "干最多活拿最少钱", "退休？遥遥无期...", "好的老板，马上改！",
+  "我走了，拜拜", "好好睡觉，好好吃饭，好好活着",
+  "不小心删库了，在老板没发现前得修好...", "我感觉做完这版方案直接起飞",
+  "前面的，允许返航", "兄弟，帮我拿个快递",
+  "你自己没长手吗？怎么老是叫我！", "适当的休息是为了更好的开始",
+  "带薪拉屎中...", "雨地落，好眠，好生机",
+  "布谷鸟叫了，这次不是在家，是在学校", "咕咕咕~咕骨谷，谷！",
+  "叮咚鸡叮咚鸡~大狗大狗~大狗大狗~", "嚼嚼嚼~", "舒服咧！",
+  "不是20号发工资吗？现在都26号了！", "没米了，还要开会员给AI上贡，新时代奴隶...",
+  "原本以为是人工智能，没想到是能智（治）工人。", "谁把评论发我电脑上的！",
+  "你承认这是你的电脑了？", "反动π、野心家...", "哇，还有帽子工厂！"
 ];
 var _toolPhraseIdx = 0;
 var _toolPhraseTimer = null;
+var _toolPhrasesPlayed = {}; // 已播放下标集合，避免重复
 
 function _startPhraseRotation() {
   if (_toolPhraseTimer) return;
-  _toolPhraseIdx = Math.floor(Math.random() * _toolPhrases.length);
+  // 随机选一个未播放过的
+  var available = [];
+  for (var i = 0; i < _toolPhrases.length; i++) {
+    if (!_toolPhrasesPlayed[i]) available.push(i);
+  }
+  if (!available.length) { _toolPhrasesPlayed = {}; for (var j = 0; j < _toolPhrases.length; j++) available.push(j); }
+  _toolPhraseIdx = available[Math.floor(Math.random() * available.length)];
+  _toolPhrasesPlayed[_toolPhraseIdx] = true;
   _updatePhraseDisplay();
   _toolPhraseTimer = setInterval(function() {
-    _toolPhraseIdx = (_toolPhraseIdx + 1) % _toolPhrases.length;
+    var avail = [];
+    for (var k = 0; k < _toolPhrases.length; k++) {
+      if (!_toolPhrasesPlayed[k]) avail.push(k);
+    }
+    if (!avail.length) { _toolPhrasesPlayed = {}; for (var l = 0; l < _toolPhrases.length; l++) avail.push(l); }
+    _toolPhraseIdx = avail[Math.floor(Math.random() * avail.length)];
+    _toolPhrasesPlayed[_toolPhraseIdx] = true;
     _updatePhraseDisplay();
   }, 5000);
 }
@@ -2479,6 +2503,7 @@ function _updatePhraseDisplay() {
 
 function _stopPhraseRotation() {
   if (_toolPhraseTimer) { clearInterval(_toolPhraseTimer); _toolPhraseTimer = null; }
+  _toolPhrasesPlayed = {}; // 清空已播放标签，为下一个气泡做准备
 }
 
 // 子智能体流式气泡辅助函数
