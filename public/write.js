@@ -1935,8 +1935,8 @@ async function doStreamingCall(text) {
         var raw = line.slice(6);
         try {
           var evt = JSON.parse(raw);
-          if (evt.type === 'connected' || evt.type === 'waiting') {
-            // 连接成功/心跳：重置超时计时器
+          // 任何有意义的事件都重置超时（connected/waiting/tool_start/tool_end）
+          if (evt.type === 'connected' || evt.type === 'waiting' || evt.type === 'tool_start' || evt.type === 'tool_end') {
             if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }
             if (evt.type === 'connected') _updateOnlineCount();
             streamConnTimeout = setTimeout(function() {
@@ -1953,7 +1953,9 @@ async function doStreamingCall(text) {
                 scrollToBottomIfAtBottom();
               }
             }, 180000);
-          } else if (evt.type === 'thinking') {
+          }
+          // 事件分派
+          if (evt.type === 'thinking') {
             if (!hasStartedThinking) { hasStartedThinking = true; startThinkingTimer(); }
             appendThinkingDelta(evt.delta);
           } else if (evt.type === 'content') {

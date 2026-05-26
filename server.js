@@ -643,6 +643,10 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
         });
         var allTools = ORCHESTRATOR_TOOLS.concat(dynamicTools);
         console.log('[Write LLM] 工具总数='+allTools.length+'（默认='+ORCHESTRATOR_TOOLS.length+' 自定义='+dynamicTools.length+'）');
+        // 工具循环心跳保活（子智能体长时间执行时不触发前端超时）
+        var toolLoopHeartbeat = setInterval(function() {
+            try { res.write('data: {"type":"waiting"}\n\n'); } catch(e) { clearInterval(toolLoopHeartbeat); }
+        }, 10000);
         var toolLoopCount = 0;
         while (toolLoopCount < 5) { // 最多5轮工具调用防无限循环
             toolLoopCount++;
@@ -652,10 +656,10 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                 method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
                 body:JSON.stringify(toolReqBody)
             });
-            if (!toolResp.ok) { console.log('[Write LLM] 工具调用失败 status='+toolResp.status); break; }
+            if (!toolResp.ok) { console.log('[Write LLM] 工具调用失败 status='+toolResp.status); clearInterval(toolLoopHeartbeat); break; }
             var toolData = await toolResp.json();
             var toolMsg = toolData.choices && toolData.choices[0] && toolData.choices[0].message;
-            if (!toolMsg) { console.log('[Write LLM] 工具响应无message'); break; }
+            if (!toolMsg) { console.log('[Write LLM] 工具响应无message'); clearInterval(toolLoopHeartbeat); break; }
 
             if (toolMsg.tool_calls && toolMsg.tool_calls.length > 0) {
                 console.log('[Write LLM] 检测到'+toolMsg.tool_calls.length+'个工具调用');
@@ -711,6 +715,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                 }
             } else {
                 // 无工具调用 → 这是最终回复，用流式输出
+                clearInterval(toolLoopHeartbeat);
                 console.log('[Write LLM] 无工具调用，进入流式输出 contentLen='+(toolMsg.content?toolMsg.content.length:0)+' thinkingLen='+(toolMsg.reasoning_content?toolMsg.reasoning_content.length:0));
                 var finalContent = toolMsg.content || '（工具调用已完成）';
                 var finalThinking = toolMsg.reasoning_content || '';
@@ -724,6 +729,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                 return;
             }
         }
+        clearInterval(toolLoopHeartbeat);
         // 工具循环结束但超过最大轮次 → 流式输出当前消息
         console.log('[Write LLM] 工具循环结束（轮次='+toolLoopCount+'），进入流式');
         // 将工具消息合并回msgs用于后续流式
