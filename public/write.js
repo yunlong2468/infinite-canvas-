@@ -1993,6 +1993,14 @@ async function doStreamingCall(text) {
               if (tCont) { tCont.style.display = ''; tCont.innerHTML += escHtml(evt.delta||'').replace(/\n/g,'<br>'); tCont.scrollTop = tCont.scrollHeight; }
             }
             scrollToBottomIfAtBottom();
+          } else if (evt.type === 'tool_request') {
+            // 子智能体向主智能体请求工具
+            var trAgent = evt.subAgent || _resolveToolAgent(evt.tool);
+            var trLabel = getAgentName(trAgent);
+            var trReqLabel = evt.requested || '未知工具';
+            var reqMsg = {type:'system',content:trLabel+' 请求调用 '+trReqLabel+' 工具',time:Date.now()};
+            agentMsgs.push(reqMsg);
+            if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(reqMsg));
           } else if (evt.type === 'tool_end') {
             _stopPhraseRotation();
             var toolAgentType = evt.subAgent || _resolveToolAgent(evt.tool);
