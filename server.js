@@ -84,6 +84,41 @@ function kickUserSessions(userId) {
     userSseClients.delete(userId);
 }
 
+// ==================== 开发者日志实时推送 ====================
+var devLogClients = [];
+var devLogBuffer = []; // 环形缓冲区（新连接回溯用）
+var DEV_LOG_MAX = 500;
+
+function broadcastDevLog(level, source, msg) {
+    var entry = { ts: new Date().toISOString(), source: source, level: level, msg: msg };
+    devLogBuffer.push(entry);
+    if (devLogBuffer.length > DEV_LOG_MAX) devLogBuffer.shift();
+    var json = JSON.stringify(entry);
+    devLogClients.forEach(function(c) { try { c.write('data: ' + json + '\n\n'); } catch(e) {} });
+    devLogClients = devLogClients.filter(function(c) { return !c.destroyed; });
+}
+
+// 覆盖 console 方法，转发到开发者日志
+(function() {
+    var _log = console.log, _warn = console.warn, _error = console.error;
+    console.log = function() { var m = Array.prototype.join.call(arguments, ' '); _log.apply(console, arguments); broadcastDevLog('info', 'server', m); };
+    console.warn = function() { var m = Array.prototype.join.call(arguments, ' '); _warn.apply(console, arguments); broadcastDevLog('warn', 'server', m); };
+    console.error = function() { var m = Array.prototype.join.call(arguments, ' '); _error.apply(console, arguments); broadcastDevLog('error', 'server', m); };
+})();
+
+app.get('/api/dev-logs', function(req, res) {
+    var token = req.query.token;
+    if (!token) { res.status(401).json({ error: '未授权' }); return; }
+    try { var payload = jwt.verify(token, JWT_SECRET); } catch(e) { res.status(401).json({ error: 'token无效' }); return; }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
+    // 先发送缓冲区中的历史日志
+    devLogBuffer.forEach(function(entry) {
+        try { res.write('data: ' + JSON.stringify(entry) + '\n\n'); } catch(e) {}
+    });
+    devLogClients.push(res);
+    req.on('close', function() { devLogClients = devLogClients.filter(function(c) { return c !== res; }); });
+});
+
 // ==================== 认证中间件 ====================
 function auth(req, res, next) {
     const h = req.headers.authorization;

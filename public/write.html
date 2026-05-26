@@ -332,6 +332,26 @@ select:focus option:checked {
   40%{ transform:scale(1); opacity:1; }
 }
 
+/* ===== 开发者日志抽屉 ===== */
+#devLogDrawer { position:fixed; bottom:0; left:calc(var(--act-w) + 8px); right:8px; z-index:700; background:var(--panel); border:0.5px solid var(--border); border-bottom:none; border-radius:8px 8px 0 0; display:none; flex-direction:column; height:35vh; }
+#devLogDrawer.open { display:flex; }
+#devLogHeader { display:flex; align-items:center; gap:8px; padding:4px 8px; height:32px; background:rgba(255,255,255,0.04); border-bottom:0.5px solid var(--border); border-radius:8px 8px 0 0; flex-shrink:0; cursor:row-resize; }
+#devLogHeader .dl-title { font-size:12px; color:var(--accent); font-weight:600; margin-right:4px; }
+#devLogHeader input { background:rgba(255,255,255,0.06); border:0.5px solid var(--border); border-radius:4px; color:#fff; font-size:11px; padding:2px 6px; outline:none; font-family:inherit; width:140px; }
+#devLogHeader select { background:rgba(255,255,255,0.06); border:0.5px solid var(--border); border-radius:4px; color:#fff; font-size:11px; padding:2px 4px; outline:none; font-family:inherit; }
+#devLogHeader .dl-btn { font-size:11px; color:var(--text2); cursor:pointer; padding:2px 6px; border-radius:4px; border:0.5px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.04); font-family:inherit; }
+#devLogHeader .dl-btn:hover { color:#fff; background:rgba(255,255,255,0.08); }
+#devLogHeader .dl-count { font-size:10px; color:var(--text2); margin-left:auto; }
+#devLogBody { flex:1; overflow-y:auto; padding:4px 0; font-size:11px; font-family:Consolas,Monaco,monospace; }
+#devLogBody .dl-line { padding:1px 8px; white-space:pre-wrap; word-break:break-all; border-bottom:0.5px solid rgba(255,255,255,0.02); line-height:1.5; }
+#devLogBody .dl-line .dl-ts { color:var(--text2); margin-right:4px; }
+#devLogBody .dl-line.dl-info .dl-msg { color:#d4d4d4; }
+#devLogBody .dl-line.dl-warn .dl-msg { color:#F5A623; }
+#devLogBody .dl-line.dl-error .dl-msg { color:#F53F3F; }
+#devLogBody .dl-line.dl-server .dl-tag { color:#05A3C5; }
+#devLogBody .dl-line.dl-client .dl-tag { color:#7C3AED; }
+#devLogBody .dl-line.dl-highlight { background:rgba(245,166,35,0.15); }
+
 /* ===== Mobile (<768px) ===== */
 @media (max-width:767px) {
   :root { --act-w:48px; }
@@ -370,6 +390,19 @@ select:focus option:checked {
 
 <!-- Zen Mode Exit -->
 <button id="zenExit" onclick="ZEN.exit()">✕ 退出全屏</button>
+
+<!-- Developer Log Drawer -->
+<div id="devLogDrawer">
+  <div id="devLogHeader">
+    <span class="dl-title">📋 开发者日志</span>
+    <select id="dlFilter" onchange="DL.filter()"><option value="all">全部</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select>
+    <input id="dlSearch" placeholder="搜索关键字..." oninput="DL.filter()">
+    <button class="dl-btn" onclick="DL.clear()">清空</button>
+    <button class="dl-btn" onclick="DL.close()">✕</button>
+    <span class="dl-count" id="dlCount">0条</span>
+  </div>
+  <div id="devLogBody"></div>
+</div>
 
 <!-- Toast -->
 <div id="_toast" style="position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999;padding:8px 20px;border-radius:8px;font-size:14px;font-family:inherit;pointer-events:none;opacity:0;transition:opacity 0.3s;"></div>

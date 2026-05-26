@@ -1,4 +1,18 @@
 console.log("=== write.js v20260523_undo 已加载 ===");
+
+// ===== 开发者日志系统（前台console拦截） =====
+var _devLogLines = [], _devLogSse = null, _devLogAutoScroll = true;
+var _origConsole = { log: console.log, warn: console.warn, error: console.error };
+function _devLogAdd(level, source, msg) {
+  var entry = { ts: new Date().toISOString(), source: source, level: level, msg: String(msg) };
+  _devLogLines.push(entry);
+  if (_devLogLines.length > 2000) _devLogLines.shift();
+  DL._renderLine(entry);
+}
+console.log = function(){ var m=Array.prototype.join.call(arguments,' '); _origConsole.log.apply(console,arguments); _devLogAdd('info','client',m); };
+console.warn = function(){ var m=Array.prototype.join.call(arguments,' '); _origConsole.warn.apply(console,arguments); _devLogAdd('warn','client',m); };
+console.error = function(){ var m=Array.prototype.join.call(arguments,' '); _origConsole.error.apply(console,arguments); _devLogAdd('error','client',m); };
+
 // ===== Pane System =====
 var paneGroups = [];
 var paneCounter = 0;
@@ -996,6 +1010,139 @@ var DEV_MODE = {
   set enabled(v) { localStorage.setItem('write_dev_mode', v ? '1' : '0'); }
 };
 
+// ===== 开发者日志面板（DL对象） =====
+var DL = {
+  _h: parseInt(localStorage.getItem('write_dev_log_h')) || 35, // vh百分比
+  _dragging: false,
+  open: function() {
+    if (!DEV_MODE.enabled) { toast('请先开启开发者选项', 'warn'); return; }
+    var drawer = document.getElementById('devLogDrawer');
+    if (drawer) { drawer.classList.add('open'); drawer.style.height = DL._h+'vh'; }
+    document.getElementById('paneContainer').style.paddingBottom = DL._h+'vh';
+    document.body.classList.add('devlog-open');
+    localStorage.setItem('write_dev_log', '1');
+    DL._connectSSE();
+    DL.filter();
+    DL._scrollBottom();
+  },
+  close: function() {
+    var drawer = document.getElementById('devLogDrawer');
+    if (drawer) drawer.classList.remove('open');
+    document.getElementById('paneContainer').style.paddingBottom = '';
+    document.body.classList.remove('devlog-open');
+    localStorage.setItem('write_dev_log', '0');
+    if (_devLogSse) { _devLogSse.close(); _devLogSse = null; }
+  },
+  toggle: function() {
+    var drawer = document.getElementById('devLogDrawer');
+    if (drawer && drawer.classList.contains('open')) DL.close(); else DL.open();
+  },
+  clear: function() {
+    _devLogLines = [];
+    var body = document.getElementById('devLogBody');
+    if (body) body.innerHTML = '';
+    DL._updateCount();
+  },
+  filter: function() {
+    var lv = document.getElementById('dlFilter').value;
+    var kw = (document.getElementById('dlSearch').value || '').toLowerCase();
+    var body = document.getElementById('devLogBody');
+    if (!body) return;
+    var html = '';
+    _devLogLines.forEach(function(e) {
+      if (lv !== 'all' && e.level !== lv) return;
+      if (kw && e.msg.toLowerCase().indexOf(kw) < 0) return;
+      var cls = 'dl-line dl-'+e.level+' dl-'+e.source;
+      var ts = e.ts.split('T')[1].split('.')[0]; // HH:MM:SS
+      var tag = e.source==='server'?'[S]':'[C]';
+      var hlit = kw ? e.msg.replace(new RegExp('('+kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>') : e.msg;
+      html += '<div class="'+cls+'"><span class="dl-ts">'+ts+'</span><span class="dl-tag">'+tag+'</span> <span class="dl-msg">'+escHtml(hlit)+'</span></div>';
+    });
+    body.innerHTML = html;
+    DL._updateCount();
+    if (_devLogAutoScroll) DL._scrollBottom();
+  },
+  _connectSSE: function() {
+    if (_devLogSse) return;
+    _devLogSse = new EventSource('/api/dev-logs?token='+encodeURIComponent(token));
+    _devLogSse.addEventListener('message', function(e) {
+      try {
+        var d = JSON.parse(e.data);
+        _devLogLines.push(d);
+        if (_devLogLines.length > 2000) _devLogLines.shift();
+        DL._renderLine(d);
+        DL._updateCount();
+        if (_devLogAutoScroll) DL._scrollBottom();
+      } catch(ex) {}
+    });
+    _devLogSse.onerror = function() { _devLogSse = null; };
+  },
+  _renderLine: function(e) {
+    var body = document.getElementById('devLogBody');
+    if (!body) return;
+    var lv = document.getElementById('dlFilter') ? document.getElementById('dlFilter').value : 'all';
+    var kw = (document.getElementById('dlSearch') ? document.getElementById('dlSearch').value : '').toLowerCase();
+    if (lv !== 'all' && e.level !== lv) return;
+    if (kw && e.msg.toLowerCase().indexOf(kw) < 0) return;
+    var cls = 'dl-line dl-'+e.level+' dl-'+e.source;
+    var ts = e.ts.split('T')[1].split('.')[0];
+    var tag = e.source==='server'?'[S]':'[C]';
+    var hlit = kw ? e.msg.replace(new RegExp('('+kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>') : e.msg;
+    var div = document.createElement('div');
+    div.className = cls;
+    div.innerHTML = '<span class="dl-ts">'+ts+'</span><span class="dl-tag">'+tag+'</span> <span class="dl-msg">'+escHtml(hlit)+'</span>';
+    body.appendChild(div);
+  },
+  _updateCount: function() {
+    var el = document.getElementById('dlCount');
+    if (el) el.textContent = _devLogLines.length+'条';
+  },
+  _scrollBottom: function() {
+    var body = document.getElementById('devLogBody');
+    if (body) body.scrollTop = body.scrollHeight;
+  }
+};
+
+// 初始化：恢复日志面板状态 + 拖拽调整高度
+(function() {
+  if (localStorage.getItem('write_dev_log') === '1' && DEV_MODE.enabled) { setTimeout(function(){ DL.open(); }, 1000); }
+  var body = document.getElementById('devLogBody');
+  if (body) {
+    body.addEventListener('scroll', function() {
+      var atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 30;
+      _devLogAutoScroll = atBottom;
+    });
+  }
+  // 拖拽日志栏调整高度
+  var hdr = document.getElementById('devLogHeader');
+  if (hdr) {
+    hdr.addEventListener('mousedown', function(e) {
+      if (e.target.tagName==='BUTTON'||e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+      DL._dragging = true;
+      document.body.style.userSelect = 'none';
+      var startY = e.clientY, startH = document.getElementById('devLogDrawer').offsetHeight;
+      function onMove(ev) {
+        var newH = startH + (startY - ev.clientY);
+        var vh = Math.round(newH / window.innerHeight * 100);
+        vh = Math.max(12, Math.min(70, vh));
+        document.getElementById('devLogDrawer').style.height = vh+'vh';
+        document.getElementById('paneContainer').style.paddingBottom = vh+'vh';
+      }
+      function onUp(ev) {
+        DL._dragging = false;
+        document.body.style.userSelect = '';
+        var finalH = document.getElementById('devLogDrawer').offsetHeight;
+        DL._h = Math.round(finalH / window.innerHeight * 100);
+        localStorage.setItem('write_dev_log_h', DL._h);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+})();
+
 function handleMentionInput() {
   if (!DEV_MODE.enabled) return;
   var inp = document.getElementById('agentInput');
@@ -1032,11 +1179,16 @@ function showSettings() {
   ov.className = 'prompt-overlay';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:800;display:flex;align-items:center;justify-content:center;';
   var devOn = DEV_MODE.enabled;
+  var devLogOn = localStorage.getItem('write_dev_log') === '1';
   ov.innerHTML = '<div style="background:#171717;border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;width:400px;">'
     +'<div style="font-size:15px;margin-bottom:16px;color:#fff;">⚙️ 设置</div>'
-    +'<div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;margin-bottom:16px;">'
-    +'<div><div style="font-size:13px;color:#fff;">开发者选项</div><div style="font-size:11px;color:var(--text2);margin-top:2px;">启用后可在输入框用 @ 唤醒子智能体加入群聊</div></div>'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;margin-bottom:12px;">'
+    +'<div><div style="font-size:13px;color:#fff;">开发者选项</div><div style="font-size:11px;color:var(--text2);margin-top:2px;">启用 @ 唤醒子智能体加入群聊</div></div>'
     +'<div id="devToggle" style="width:44px;height:24px;border-radius:12px;cursor:pointer;transition:background 0.2s;position:relative;'+(devOn?'background:var(--accent);':'background:rgba(255,255,255,0.15);')+'"><div style="position:absolute;top:2px;'+(devOn?'right:2px;':'left:2px;')+'width:20px;height:20px;border-radius:50%;background:#fff;transition:all 0.2s;"></div></div>'
+    +'</div>'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;margin-bottom:16px;">'
+    +'<div><div style="font-size:13px;color:#fff;">开发者日志</div><div style="font-size:11px;color:var(--text2);margin-top:2px;">实时展示前后端完整调用日志（依赖开发者选项）</div></div>'
+    +'<div id="devLogToggle" style="width:44px;height:24px;border-radius:12px;cursor:pointer;transition:background 0.2s;position:relative;'+(devLogOn?'background:var(--accent);':'background:rgba(255,255,255,0.15);')+'"><div style="position:absolute;top:2px;'+(devLogOn?'right:2px;':'left:2px;')+'width:20px;height:20px;border-radius:50%;background:#fff;transition:all 0.2s;"></div></div>'
     +'</div>'
     +'<div style="display:flex;gap:8px;justify-content:flex-end;">'
     +'<button style="padding:8px 18px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);color:#A1A1AA;cursor:pointer;font-family:inherit;" onclick="this.closest(\'.prompt-overlay\').remove()">关闭</button>'
@@ -1045,7 +1197,14 @@ function showSettings() {
   document.getElementById('devToggle').addEventListener('click', function() {
     DEV_MODE.enabled = !DEV_MODE.enabled;
     ov.remove();
-    showSettings(); // 刷新面板
+    showSettings();
+  });
+  document.getElementById('devLogToggle').addEventListener('click', function() {
+    if (!DEV_MODE.enabled) { toast('请先开启开发者选项', 'warn'); return; }
+    var cur = localStorage.getItem('write_dev_log') === '1';
+    if (cur) { DL.close(); } else { DL.open(); }
+    ov.remove();
+    showSettings();
   });
   ov.addEventListener('click', function(e) { if (e.target===ov) ov.remove(); });
 }
