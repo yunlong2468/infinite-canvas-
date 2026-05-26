@@ -1980,6 +1980,19 @@ async function doStreamingCall(text) {
               _updateOnlineCount();
               pendingAgent = null;
             }
+          } else if (evt.type === 'tool_stream') {
+            // 子智能体流式输出 → 实时更新气泡思考区/正文区
+            var tsAgent = evt.subAgent || _resolveToolAgent(evt.tool);
+            if (!_toolStreamEl || _toolStreamAgent !== tsAgent) _ensureToolBubble(tsAgent);
+            if (evt.phase === 'thinking') {
+              var tThink = _toolStreamEl ? _toolStreamEl.querySelector('.stream-think-body') : null;
+              if (tThink) { tThink.innerHTML += escHtml(evt.delta||'').replace(/\n/g,'<br>'); tThink.scrollTop = tThink.scrollHeight; }
+            } else if (evt.phase === 'content') {
+              _stopPhraseRotation(); // 开始输出正文，轮播结束
+              var tCont = _toolStreamEl ? _toolStreamEl.querySelector('.stream-content') : null;
+              if (tCont) { tCont.style.display = ''; tCont.innerHTML += escHtml(evt.delta||'').replace(/\n/g,'<br>'); tCont.scrollTop = tCont.scrollHeight; }
+            }
+            scrollToBottomIfAtBottom();
           } else if (evt.type === 'tool_end') {
             _stopPhraseRotation();
             var toolAgentType = evt.subAgent || _resolveToolAgent(evt.tool);
@@ -1998,9 +2011,11 @@ async function doStreamingCall(text) {
                 var tContent = _toolStreamEl.querySelector('.stream-content');
                 if (tContent) { tContent.style.display = ''; tContent.innerHTML = formatAgentContent(evt.content); }
               }
-              // 追加结果消息到agentMsgs（持久化用，不重复插入DOM）
-              var toolMsg = {type:'chat',role:'assistant',agent:toolAgentType,content:evt.content||'',thinking:'',time:Date.now()};
+              // 追加结果消息到agentMsgs并持久化到DB
+              var toolMsg = {type:'chat',role:'assistant',agent:toolAgentType,content:evt.content||'',thinking:evt.thinking||'',time:Date.now()};
               agentMsgs.push(toolMsg);
+              // 存入DB，确保刷新后气泡一致
+              api('POST','/writing-projects/'+projectId+'/conversations',{agent_type:toolAgentType,role:'assistant',content:evt.content||'',thinking:evt.thinking||'',metadata:'{"type":"chat"}'});
               var leaveMsg = {type:'system',content:evt.summary||'子智能体已完成',time:Date.now()};
               agentMsgs.push(leaveMsg);
               // 关闭流式状态，保留DOM
@@ -2009,8 +2024,9 @@ async function doStreamingCall(text) {
             } else {
               // 兜底：气泡不存在时用旧逻辑
               if (evt.content) {
-                var toolMsg2 = {type:'chat',role:'assistant',agent:toolAgentType,content:evt.content,thinking:'',time:Date.now()};
+                var toolMsg2 = {type:'chat',role:'assistant',agent:toolAgentType,content:evt.content,thinking:evt.thinking||'',time:Date.now()};
                 agentMsgs.push(toolMsg2);
+                api('POST','/writing-projects/'+projectId+'/conversations',{agent_type:toolAgentType,role:'assistant',content:evt.content||'',thinking:evt.thinking||'',metadata:'{"type":"chat"}'});
                 if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(toolMsg2));
               }
               var leaveMsg2 = {type:'system',content:evt.summary||'子智能体已完成',time:Date.now()};
@@ -2522,8 +2538,15 @@ function pollStreamBuffer() {
         }
       }
       // 创建子智能体流式气泡（独立于调配师静态消息）
-      _ensureToolBubble(agentType);
-      _startPhraseRotation();
+      // 检查DB历史：如果该智能体已有回复，跳过避免重复气泡
+      var _lastUserIdx = -1;
+      for (var _li = agentMsgs.length - 1; _li >= 0; _li--) { if (agentMsgs[_li].role === 'user') { _lastUserIdx = _li; break; } }
+      var _hasReply = false;
+      for (var _lj = _lastUserIdx + 1; _lj < agentMsgs.length; _lj++) { if (agentMsgs[_lj].agent === agentType && agentMsgs[_lj].role === 'assistant') { _hasReply = true; break; } }
+      if (!_hasReply) {
+        _ensureToolBubble(agentType);
+        _startPhraseRotation();
+      }
       _bufPollTimer = setTimeout(pollStreamBuffer, 2000);
       return;
     }
@@ -2532,7 +2555,12 @@ function pollStreamBuffer() {
     if (phase === 'tool_result') {
       _bufActive = true; setBusyUI(true);
       _currentStreamAgent = agentType;
-      _ensureToolBubble(agentType);
+      // 同上：检查是否已有回复
+      var _lu2 = -1;
+      for (var _lk = agentMsgs.length - 1; _lk >= 0; _lk--) { if (agentMsgs[_lk].role === 'user') { _lu2 = _lk; break; } }
+      var _hr2 = false;
+      for (var _ll = _lu2 + 1; _ll < agentMsgs.length; _ll++) { if (agentMsgs[_ll].agent === agentType && agentMsgs[_ll].role === 'assistant') { _hr2 = true; break; } }
+      if (!_hr2) _ensureToolBubble(agentType);
       _stopPhraseRotation();
       // 工具结果摘要只显示在子智能体气泡中
       if (buf.thinking && _toolStreamEl) {
@@ -2656,10 +2684,8 @@ function _startPhraseRotation() {
 
 function _updatePhraseDisplay() {
   if (!_toolStreamEl) return;
-  var body = _toolStreamEl.querySelector('.stream-think-body');
-  if (body) body.innerHTML = escHtml(_toolPhrases[_toolPhraseIdx]);
   var label = _toolStreamEl.querySelector('.toggle-label');
-  if (label) label.textContent = '💭 牛马碎碎念';
+  if (label) label.textContent = '💭 '+_toolPhrases[_toolPhraseIdx];
 }
 
 function _stopPhraseRotation() {
