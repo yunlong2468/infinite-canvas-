@@ -456,18 +456,16 @@ function _callSubAgentLLM(projectId, userId, messages, agentType, tools, streamC
                             fullContent += delta.content;
                             if (streamCallback) streamCallback({ type: 'content', delta: delta.content });
                         }
-                        if (delta.tool_calls && fullToolCalls.length === 0) {
+                        if (delta.tool_calls) {
                             delta.tool_calls.forEach(function(tc) {
-                                if (!tc.function || !tc.function.name) return;
-                                var existing = null;
-                                for (var j = 0; j < fullToolCalls.length; j++) {
-                                    if (fullToolCalls[j].id === tc.id) { existing = fullToolCalls[j]; break; }
+                                var idx = tc.index;
+                                if (idx === undefined || idx === null) return;
+                                if (!fullToolCalls[idx]) fullToolCalls[idx] = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
+                                if (tc.id) fullToolCalls[idx].id = tc.id;
+                                if (tc.function) {
+                                    if (tc.function.name) fullToolCalls[idx].function.name = tc.function.name;
+                                    if (tc.function.arguments) fullToolCalls[idx].function.arguments += tc.function.arguments;
                                 }
-                                if (!existing) {
-                                    existing = { id: tc.id || '', type: 'function', function: { name: tc.function.name, arguments: '' } };
-                                    fullToolCalls.push(existing);
-                                }
-                                if (tc.function.arguments) existing.function.arguments += tc.function.arguments;
                             });
                         }
                     } catch(e) {}
@@ -646,8 +644,9 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
                 var toolSystemPrompt = toolIdentityPrefix + (userTool.skill_content || '');
                 // 构建工具列表和 request_tool 定义
                 var allTools2 = ORCHESTRATOR_TOOLS.concat(queryAll('SELECT ut.* FROM user_tools ut INNER JOIN optimized_skills os ON ut.skill_id=os.id AND os.is_enabled=1 WHERE ut.user_id=? AND ut.is_enabled=1', [userId]).map(function(t){ return { type:'function', function:{ name:t.name, description:t.description } }; }));
-                var toolListStr = allTools2.map(function(t){ return t.function.name+': '+t.function.description; }).join(' | ');
-                var requestToolDef = { type: 'function', function: { name: 'request_tool', description: '向主智能体请求调用工具。可用工具：'+toolListStr, parameters: { type: 'object', properties: { tool_name: { type: 'string', description: '要请求调用的工具名' }, tool_args: { type: 'object', description: '工具参数JSON对象' } }, required: ['tool_name'] } } };
+                // 过滤掉自身，防止子智能体递归请求自己
+                var toolListStr = allTools2.filter(function(t){ return t.function.name !== toolName; }).map(function(t){ return t.function.name+': '+t.function.description; }).join(' | ');
+                var requestToolDef = { type: 'function', function: { name: 'request_tool', description: '向主智能体请求调用工具。可用工具：'+toolListStr, parameters: { type: 'object', properties: { tool_name: { type: 'string', description: '要请求调用的工具名' }, tool_args: { type: 'string', description: '工具参数的JSON字符串，如 {"skill_name":"世界观设计指南"} 或 {}' } }, required: ['tool_name'] } } };
                 // 续接模式：使用历史消息继续对话；否则从零开始
                 var messages;
                 if (_continueMsgs) {
@@ -834,12 +833,15 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                     console.log('[Write LLM] 工具完成: '+toolName+' '+toolResult.summary);
                     // 子智能体请求工具循环：处理request_tool
                     var subAgentMsgs = toolResult._subAgentMsgs;
+                    var _accContent = toolResult.result || '';
+                    var _accThinking = toolResult.thinking || '';
                     while (toolResult.tool_calls && toolResult.tool_calls.length > 0) {
                         var reqTc = toolResult.tool_calls[0];
                         var reqArgs = {};
                         try { reqArgs = JSON.parse(reqTc.function.arguments || '{}'); } catch(e) {}
                         var requestedTool = reqArgs.tool_name || '';
                         var requestedArgs = reqArgs.tool_args || {};
+                        if (typeof requestedArgs === 'string') { try { requestedArgs = JSON.parse(requestedArgs); } catch(e) { requestedArgs = {}; } }
                         console.log('[Write LLM] 子智能体 '+toolName+' 请求工具: '+requestedTool);
                         // 通知前端
                         res.write('data: '+JSON.stringify({type:'tool_request',tool:toolName,subAgent:actualSubAgent,requested:requestedTool,args:requestedArgs})+'\n\n');
@@ -855,8 +857,13 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                         };
                         toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId, streamCallback, subAgentMsgs);
                         console.log('[Write LLM] 子智能体继续完成: '+toolName+' '+toolResult.summary);
+                        _accContent += toolResult.result || '';
+                        _accThinking += toolResult.thinking || '';
                         subAgentMsgs = toolResult._subAgentMsgs || subAgentMsgs;
                     }
+                    // 用累积值覆盖最后一轮结果，保证tool_end/DB记录完整
+                    toolResult.result = _accContent;
+                    toolResult.thinking = _accThinking;
                     var resultContent = toolResult.result ? (toolResult.result||'').substring(0, 500) : toolResult.summary;
                     saveStreamBuffer(projectId, resultContent, '✅ '+toolResult.summary, streamStartedAt, 'tool_result', actualSubAgent);
                     dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, metadata) VALUES (?,?,?,?,?)', [projectId, actualSubAgent, 'system', '✅ '+toolResult.summary, '{"type":"system"}']);
@@ -1292,19 +1299,17 @@ function callOutlineLLM(projectId, userId, systemPrompt, userContent, agentType,
                             fullContent += delta.content;
                             streamCallback({ type: 'content', delta: delta.content });
                         }
-                        // 检测 tool_calls（子智能体请求工具，每次只取第一个，用id去重）
-                        if (delta.tool_calls && fullToolCalls.length === 0) {
+                        // 检测 tool_calls（按index累积，允许name跨帧到达）
+                        if (delta.tool_calls) {
                             delta.tool_calls.forEach(function(tc) {
-                                if (!tc.function || !tc.function.name) return;
-                                var existing = null;
-                                for (var j = 0; j < fullToolCalls.length; j++) {
-                                    if (fullToolCalls[j].id === tc.id) { existing = fullToolCalls[j]; break; }
+                                var _idx = tc.index;
+                                if (_idx === undefined || _idx === null) return;
+                                if (!fullToolCalls[_idx]) fullToolCalls[_idx] = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
+                                if (tc.id) fullToolCalls[_idx].id = tc.id;
+                                if (tc.function) {
+                                    if (tc.function.name) fullToolCalls[_idx].function.name = tc.function.name;
+                                    if (tc.function.arguments) fullToolCalls[_idx].function.arguments += tc.function.arguments;
                                 }
-                                if (!existing) {
-                                    existing = { id: tc.id || '', type: 'function', function: { name: tc.function.name, arguments: '' } };
-                                    fullToolCalls.push(existing);
-                                }
-                                if (tc.function.arguments) existing.function.arguments += tc.function.arguments;
                             });
                         }
                     } catch(e) {}

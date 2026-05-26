@@ -1986,11 +1986,11 @@ async function doStreamingCall(text) {
             if (!_toolStreamEl || _toolStreamAgent !== tsAgent) _ensureToolBubble(tsAgent);
             if (evt.phase === 'thinking') {
               var tThink = _toolStreamEl ? _toolStreamEl.querySelector('.stream-think-body') : null;
-              if (tThink) { tThink.innerHTML += escHtml(evt.delta||'').replace(/\n/g,'<br>'); tThink.scrollTop = tThink.scrollHeight; }
+              if (tThink) { tThink.insertAdjacentHTML('beforeend', escHtml(evt.delta||'').replace(/\n/g,'<br>')); tThink.scrollTop = tThink.scrollHeight; }
             } else if (evt.phase === 'content') {
-              _stopPhraseRotation(); // 开始输出正文，轮播结束
+              _stopPhraseRotation();
               var tCont = _toolStreamEl ? _toolStreamEl.querySelector('.stream-content') : null;
-              if (tCont) { tCont.style.display = ''; tCont.innerHTML += escHtml(evt.delta||'').replace(/\n/g,'<br>'); tCont.scrollTop = tCont.scrollHeight; }
+              if (tCont) { tCont.style.display = ''; tCont.insertAdjacentHTML('beforeend', escHtml(evt.delta||'').replace(/\n/g,'<br>')); tCont.scrollTop = tCont.scrollHeight; }
             }
             scrollToBottomIfAtBottom();
           } else if (evt.type === 'tool_request') {
@@ -2011,18 +2011,21 @@ async function doStreamingCall(text) {
               if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(skillMsg));
               _updateOnlineCount();
             } else if (_toolStreamEl) {
-              var tBody = _toolStreamEl.querySelector('.stream-think-body');
-              if (tBody) tBody.innerHTML = escHtml(evt.summary || '已完成');
+              // 保留流式累积的thinking/content，只更新标签状态
               var tLabel = _toolStreamEl.querySelector('.toggle-label');
-              if (tLabel) tLabel.textContent = '💭 结果摘要';
+              if (tLabel && evt.thinking) {
+                tLabel.textContent = '💭 思考过程（已完成）';
+              } else if (tLabel) {
+                tLabel.textContent = '💭 结果摘要';
+              }
+              // 确保内容区可见（流式阶段可能未触发content事件）
               if (evt.content) {
                 var tContent = _toolStreamEl.querySelector('.stream-content');
-                if (tContent) { tContent.style.display = ''; tContent.innerHTML = formatAgentContent(evt.content); }
+                if (tContent) tContent.style.display = '';
               }
               // 追加结果消息到agentMsgs并持久化到DB
               var toolMsg = {type:'chat',role:'assistant',agent:toolAgentType,content:evt.content||'',thinking:evt.thinking||'',time:Date.now()};
               agentMsgs.push(toolMsg);
-              // 存入DB，确保刷新后气泡一致
               api('POST','/writing-projects/'+projectId+'/conversations',{agent_type:toolAgentType,role:'assistant',content:evt.content||'',thinking:evt.thinking||'',metadata:'{"type":"chat"}'});
               var leaveMsg = {type:'system',content:evt.summary||'子智能体已完成',time:Date.now()};
               agentMsgs.push(leaveMsg);
@@ -2031,8 +2034,8 @@ async function doStreamingCall(text) {
               _updateOnlineCount();
             } else {
               // 兜底：气泡不存在时用旧逻辑
-              if (evt.content) {
-                var toolMsg2 = {type:'chat',role:'assistant',agent:toolAgentType,content:evt.content,thinking:evt.thinking||'',time:Date.now()};
+              if (evt.content || evt.thinking) {
+                var toolMsg2 = {type:'chat',role:'assistant',agent:toolAgentType,content:evt.content||'',thinking:evt.thinking||'',time:Date.now()};
                 agentMsgs.push(toolMsg2);
                 api('POST','/writing-projects/'+projectId+'/conversations',{agent_type:toolAgentType,role:'assistant',content:evt.content||'',thinking:evt.thinking||'',metadata:'{"type":"chat"}'});
                 if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(toolMsg2));
