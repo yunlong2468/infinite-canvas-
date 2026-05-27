@@ -20,8 +20,8 @@ import requests
 # 配置
 # ============================================================
 
-API_URL = "https://api.yijiarj.cn/v1/chat/completions"
-API_KEY = "sk-eGcYBsFjUTYIiaTwY9ux8WFNSiz87Jx5768jebK8nvRgAAGb"
+API_URL = os.environ.get("YIJIARJ_API_URL", "https://api.yijiarj.cn/v1/chat/completions")
+API_KEY = os.environ.get("YIJIARJ_API_KEY", "")
 MODEL = "image2"
 SIZE = "9:16"  # 竖屏 9:16（ad分组用比例值，非ad分组用 "1024x1792"）
 
