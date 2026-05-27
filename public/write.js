@@ -137,7 +137,9 @@ var PANE = {
     this._renderPane(p);
     this.saveLayout();
     ACT._updateBadges();
-  }, function(fromPaneId, toPaneId, tabId) {
+  },
+
+  moveTab: function(fromPaneId, toPaneId, tabId) {
     var fp = this._getPane(fromPaneId); if (!fp) return;
     var tp = this._getPane(toPaneId); if (!tp) return;
     var idx = -1;
@@ -2782,7 +2784,7 @@ function _ensureToolBubble(agentType) {
     + '<div class="bubble">'
     + '<div style="font-size:11px;color:var(--accent);padding:4px;margin:-4px 0 -6px -4px;cursor:pointer;display:inline-block;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(agentType)+'\')">'+escHtml(name)+'</div>'
     + '<span class="think-toggle stream-think-toggle" onclick="var b=this.nextElementSibling;var show=b.classList.toggle(\'show\');var lb=this.querySelector(\'.toggle-label\');if(lb)lb.textContent=show?\'💭 收起\':\'💭 处理中...\'" style="cursor:pointer;">'
-    + '<span class="toggle-label">💭 处理中...</span> '<span class="stream-timer">等待中...</span> '
+    + '<span class="toggle-label">💭 处理中...</span> ' + '<span class="stream-timer">等待中...</span> '
     + '<span class="typing-dots"><b></b><b></b><b></b></span>'
     + '</span>'
     + '<div class="think-body show stream-think-body" style="max-height:200px;overflow-y:auto;text-align:left;"></div>'
