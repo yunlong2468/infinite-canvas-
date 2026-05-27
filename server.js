@@ -382,7 +382,100 @@ var ORCHESTRATOR_TOOLS = [
 ];
 
 // 爬虫系统提示（需定义在executeToolAsync之前，crawl_books分支会引用）
-var CRAWLER_SYSTEM = '你是一个小说数据爬取分析助手。基于用户的小说创作方向，搜索并推荐同类热门网络小说作为参考。\n\n请严格按以下格式输出（必须用```json包裹）：\n```json\n{"书籍":[{"书名":"","作者":"","简介":"","热度":"","字数":"","标签":[""],"平台":"番茄/起点/晋江等"}]}\n```\n至少输出5本相关书籍。根据用户的小说类型和方向，生成真实可信的参考书籍信息。';
+var CRAWLER_SYSTEM = '你是一个小说数据爬取分析助手。从提供的网页HTML中提取热门网络小说信息。\n\n## 输出格式\n严格输出JSON（用```json包裹）：\n```json\n{"书籍":[{"书名":"","作者":"","简介":"","热度":"","字数":"","标签":[""],"平台":"番茄/起点/晋江等"}]}\n```\n\n## 规则\n- 只提取HTML中实际存在的书籍信息，严禁编造书名或作者\n- 如果HTML内容中找不到任何书籍信息，返回 {"书籍":[]}\n- 有多少提取多少，不需要凑数\n- 平台字段填当前爬取的目标平台名称\n- 热度/字数如果HTML中没有，填"未知"\n\n## HTML结构参考\n- 番茄小说：书籍卡片通常在 class含"book"或"card"的div中，书名在h3/a标签，作者在p/span\n- 起点中文网：书籍列表在 class含"book-list"或"result"的区域，每条为li或div\n- 晋江/飞卢：类似结构，书名和作者通常在a标签或带class的span中\n- 通用规则：如果HTML结构不清晰，尝试提取所有看起来像"书名+作者"的文本配对';
+
+// ==================== 真实爬虫模块 ====================
+const iconv = require('iconv-lite');
+
+// 平台搜索URL映射（{keyword}会被替换为搜索词）
+var CRAWL_URLS = {
+  '番茄': { url: 'https://fanqienovel.com/search?keyword={keyword}', enc: 'utf-8' },
+  '起点': { url: 'https://www.qidian.com/search?kw={keyword}', enc: 'utf-8' },
+  '晋江': { url: 'https://www.jjwxc.net/search.php?kw={keyword}', enc: 'gbk' },
+  '飞卢': { url: 'https://b.faloo.com/search?kw={keyword}', enc: 'utf-8' },
+  'QQ阅读': { url: 'https://book.qq.com/search?kw={keyword}', enc: 'utf-8' },
+  '七猫': { url: 'https://www.qimao.com/search/index?keyword={keyword}', enc: 'utf-8' },
+  '掌阅': { url: 'https://www.zhangyue.com/search?keyword={keyword}', enc: 'utf-8' },
+  '息壤': { url: 'https://www.xrzww.com/search?keyword={keyword}', enc: 'utf-8' },
+  '菠萝包': { url: 'https://www.bilibilicomics.com/search?keyword={keyword}', enc: 'utf-8' },
+  '刺猬猫': { url: 'https://www.ciweimao.com/search?keyword={keyword}', enc: 'utf-8' },
+  '纵横': { url: 'https://www.zongheng.com/search?keyword={keyword}', enc: 'utf-8' }
+};
+
+// 爬取平台搜索页HTML（带超时、编码处理、重试）
+function crawlWebPage(platform, keyword) {
+    return new Promise(function(resolve) {
+        var cfg = CRAWL_URLS[platform];
+        if (!cfg) { resolve({ error: '不支持的平台: '+platform, html: '', url: '' }); return; }
+        var url = cfg.url.replace('{keyword}', encodeURIComponent(keyword));
+        var enc = cfg.enc || 'utf-8';
+        console.log('[Crawler] 开始爬取: '+platform+' URL='+url);
+        _doFetch(url, enc, 1, function(result) {
+            if (result.error) console.log('[Crawler] 爬取失败: '+result.error);
+            else console.log('[Crawler] 爬取成功 HTML长度='+result.html.length);
+            resolve(result);
+        });
+    });
+}
+
+function _doFetch(url, enc, attempt, callback) {
+    var controller = new AbortController();
+    var timer = setTimeout(function() { controller.abort(); }, 12000);
+    fetch(url, {
+        method: 'GET',
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+        },
+        signal: controller.signal
+    }).then(function(r) {
+        clearTimeout(timer);
+        if (!r.ok) {
+            if (attempt < 2) { console.log('[Crawler] HTTP '+r.status+' 重试#'+attempt); return _doFetch(url, enc, attempt+1, callback); }
+            callback({ error: 'HTTP '+r.status, html: '', url: url }); return;
+        }
+        // 读取响应为 ArrayBuffer 以处理编码
+        return r.arrayBuffer().then(function(buf) {
+            var contentType = r.headers.get('content-type') || '';
+            var match = contentType.match(/charset=([^\s;]+)/i);
+            var detectedEnc = match ? match[1].toLowerCase() : enc;
+            // 如果响应头指定了编码，优先使用
+            var useEnc = detectedEnc;
+            if (useEnc === 'gb2312') useEnc = 'gbk';
+            if (useEnc === 'gbk' || useEnc === 'gb18030') {
+                var text = iconv.decode(Buffer.from(buf), 'gbk');
+                callback({ html: _cleanHTML(text), url: url });
+            } else {
+                var text = new TextDecoder(useEnc).decode(buf);
+                callback({ html: _cleanHTML(text), url: url });
+            }
+        });
+    }).catch(function(err) {
+        clearTimeout(timer);
+        if (attempt < 2) { console.log('[Crawler] 请求超时 重试#'+attempt); return _doFetch(url, enc, attempt+1, callback); }
+        callback({ error: err.message, html: '', url: url });
+    });
+}
+
+// HTML 预处理：删除 script/style/nav/注释，压缩空白
+function _cleanHTML(html) {
+    html = html || '';
+    // 大体积HTML先快速剥离script/style（占比最大且不含书籍信息）
+    if (html.length > 200000) {
+        try { html = html.replace(/<script[\s\S]*?<\/script>/gi, ''); } catch(e) {}
+        try { html = html.replace(/<style[\s\S]*?<\/style>/gi, ''); } catch(e) {}
+    }
+    try {
+        html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+        html = html.replace(/<style[\s\S]*?<\/style>/gi, '');
+        html = html.replace(/<nav[\s\S]*?<\/nav>/gi, '');
+        html = html.replace(/<!--[\s\S]*?-->/g, '');
+        html = html.replace(/<svg[\s\S]*?<\/svg>/gi, '');
+        html = html.replace(/\n\s*\n/g, '\n');
+        return html.substring(0, 20000);
+    } catch(e) { return html.substring(0, 20000); }
+}
 
 var SKILL_OPTIMIZER_SYSTEM = '你是一个技能（Skill）优化专家。你不仅创建技能指南，还可以为技能定义**新的可调用工具**，这些工具会被注册到调配师的工具箱中供后续调用。\n\n## 系统已有工具（不可重复定义）\n- generate_outline：生成小说分卷分章大纲\n- generate_characters：设计角色档案\n- crawl_books：爬取/搜索同类热门小说数据\n- load_skill：加载技能指南\n\n## 输出格式\n请严格输出以下JSON（不含markdown代码块标记）：\n{\n  "content": "技能指南（Markdown格式，含场景、步骤、注意事项）",\n  "tools": [\n    {\n      "name": "工具英文名（snake_case，如 design_worldview）",\n      "description": "工具用途简短描述（给AI看的，说明何时调用）",\n      "parameters": {\n        "type": "object",\n        "properties": {\n          "参数名": {"type": "参数类型", "description": "参数描述"}\n        }\n      }\n    }\n  ]\n}\n\n## 规则\n1. 如果技能的操作可以完全由已有工具完成，tools数组为空 []\n2. 如果技能需要新的操作能力（如世界观设计、战斗系统设计等），在tools中定义新工具\n3. content中的操作步骤必须明确写出调用哪个工具及其参数映射\n4. tools中的每个工具都必须有清晰的 name、description、parameters\n5. 不要输出```json标记，直接输出纯JSON';
 
@@ -549,30 +642,59 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
         } else if (tl.indexOf('crawl') >= 0 || toolName === 'crawl_books') {
             var proj3 = queryOne('SELECT * FROM writing_projects WHERE id=?', [projectId]);
             var platform = args.platform || '番茄';
-            var context3 = '目标平台：'+platform+'\n正在为以下小说项目搜索参考书籍：\n- 标题：'+proj3.title+'\n- 类型：'+(proj3.genre||'未定')+' '+(proj3.sub_genre||'')+'\n- 目标字数：'+(proj3.target_words||'未定')+'\n- 风格：'+(proj3.style_ref||'无')+'\n\n';
-            var history3 = queryAll('SELECT * FROM agent_conversations WHERE project_id=? ORDER BY created_at ASC LIMIT 200', [projectId]);
-            history3.forEach(function(m) {
-                if (m.role==='user') context3 += '用户：'+m.content+'\n';
-                else if (m.role==='assistant' && m.agent_type==='orchestrator') context3 += '主Agent：'+m.content+'\n';
-            });
-            context3 += '\n请根据对话提取创作方向，在【'+platform+'】平台搜索最近6个月同类热门小说，输出JSON（用```json包裹），至少5本，每本书的平台字段填"'+platform+'"。';
-            callOutlineLLM(projectId, userId, CRAWLER_SYSTEM, context3, 'crawler', null, function(result) {
-                if (result.error) { resolve({ error: result.error, summary: '爬取失败: '+result.error }); return; }
-                var summary = '爬取完成';
-                try {
-                    var clean = (result.content||'').replace(/```json\s*|\s*```/g, '').trim();
-                    var books = JSON.parse(clean);
-                    if (books['书籍']) {
-                        books['书籍'].forEach(function(b) {
-                            dbRun('INSERT INTO agent_crawler_data (project_id, platform, book_name, author, cover_url, intro, tags, status) VALUES (?,?,?,?,?,?,?,?)',
-                                [projectId, b['平台']||'未知', b['书名']||'', b['作者']||'', b['封面']||'', b['简介']||'', JSON.stringify(b['标签']||[]), 'pending']);
+            // 从项目信息生成搜索关键词
+            var keyword = (proj3.genre||'') + ' ' + (proj3.sub_genre||'') + ' 小说';
+            console.log('[Writing 爬虫] 项目='+projectId+' 平台='+platform+' 关键词='+keyword);
+            // 第1层：真实网页爬取
+            crawlWebPage(platform, keyword).then(function(crawlResult) {
+                if (crawlResult.html && !crawlResult.error) {
+                    // HTML 获取成功 → 喂 LLM 提取
+                    var ctx3 = '目标平台：'+platform+'\n项目：'+proj3.title+'\n类型：'+(proj3.genre||'')+' '+(proj3.sub_genre||'')+'\n\n网页URL：'+crawlResult.url+'\n网页HTML：\n'+crawlResult.html;
+                    callOutlineLLM(projectId, userId, CRAWLER_SYSTEM, ctx3, 'crawler', null, function(result) {
+                        var summary = '爬取完成'; var allBooks = [];
+                        try {
+                            var clean = (result.content||'').replace(/```json\s*|\s*```/g, '').trim();
+                            var parsed = JSON.parse(clean);
+                            if (parsed['书籍']) allBooks = parsed['书籍'];
+                        } catch(e) { console.log('[Writing 爬虫] JSON解析失败:', e.message); }
+                        var inserted = 0;
+                        allBooks.forEach(function(b) {
+                            try {
+                                dbRun('INSERT INTO agent_crawler_data (project_id, platform, book_name, author, cover_url, intro, tags, status, source) VALUES (?,?,?,?,?,?,?,?,?)',
+                                    [projectId, b['平台']||platform, b['书名']||'', b['作者']||'', b['封面']||'', b['简介']||'', JSON.stringify(b['标签']||[]), 'pending', 'web']);
+                                inserted++;
+                            } catch(e) { if (e.message && e.message.indexOf('UNIQUE')>=0) console.log('[Writing 爬虫] 重复跳过: '+b['书名']); else console.error('[Writing 爬虫] 插入失败:', e.message); }
                         });
-                        saveDB();
-                        summary = '已爬取 '+books['书籍'].length+' 本参考书籍（'+books['书籍'].map(function(b){return b['书名'];}).join('、')+'）';
-                    }
-                } catch(e) { console.log('[Writing 爬虫] JSON解析失败:', e.message); }
-                resolve({ result: result.content, thinking: result.thinking || '', summary: summary });
-            }, streamCallback);
+                        if (inserted > 0) saveDB();
+                        // 第2层：提取不足3本 → LLM 补充
+                        if (inserted < 3) {
+                            var hist3 = queryAll('SELECT * FROM agent_conversations WHERE project_id=? ORDER BY created_at ASC LIMIT 100', [projectId]);
+                            var supp = '目标平台：'+platform+'\n项目：'+proj3.title+'\n类型：'+(proj3.genre||'')+' '+(proj3.sub_genre||'')+'\n\n';
+                            hist3.forEach(function(m) { if (m.role==='user') supp += '用户：'+m.content+'\n'; else if (m.role==='assistant'&&m.agent_type==='orchestrator') supp += '主Agent：'+m.content+'\n'; });
+                            supp += '\n真实网页只提取到'+inserted+'本书，请根据对话中的创作方向，用训练知识补充推荐'+(5-inserted)+'本同类热门小说。输出JSON（```json包裹），每本书的平台字段填"'+platform+'"。';
+                            callOutlineLLM(projectId, userId, '基于小说创作方向，推荐同类热门网络小说。输出JSON：{"书籍":[{"书名":"","作者":"","简介":"","热度":"","字数":"","标签":[""],"平台":"'+platform+'"}]}。不要编造完全不存在的内容，根据训练数据中的知识推荐。', supp, 'crawler', null, function(r2) {
+                                var suppBooks = [];
+                                try { var c2 = (r2.content||'').replace(/```json\s*|\s*```/g,'').trim(); var p2 = JSON.parse(c2); if (p2['书籍']) suppBooks = p2['书籍']; } catch(e) {}
+                                var ins2 = 0;
+                                suppBooks.forEach(function(b) {
+                                    try { dbRun('INSERT INTO agent_crawler_data (project_id,platform,book_name,author,cover_url,intro,tags,status,source) VALUES (?,?,?,?,?,?,?,?,?)', [projectId,b['平台']||platform,b['书名']||'',b['作者']||'',b['封面']||'',b['简介']||'',JSON.stringify(b['标签']||[]),'pending','llm']); ins2++; } catch(e) { if (e.message&&e.message.indexOf('UNIQUE')>=0) console.log('[Writing 爬虫] 补充重复跳过: '+b['书名']); }
+                                });
+                                if (ins2 > 0) saveDB();
+                                console.log('[Writing 爬虫] 真实'+inserted+'本 + 补充'+ins2+'本');
+                                resolve({ result: result.content, thinking: result.thinking||'', summary: '真实爬取'+inserted+'本 + LLM补充'+ins2+'本' });
+                            });
+                        } else {
+                            console.log('[Writing 爬虫] 真实爬取'+inserted+'本');
+                            resolve({ result: result.content, thinking: result.thinking||'', summary: '真实爬取'+inserted+'本参考书籍' });
+                        }
+                    }, streamCallback);
+                } else {
+                    // 第3层：网页获取失败 → 返回错误
+                    console.log('[Writing 爬虫] 网页获取失败: '+crawlResult.error);
+                    resolve({ error: crawlResult.error, summary: '爬取失败：无法访问【'+platform+'】网站，请更换平台或稍后重试' });
+                }
+            });
+        } else if (tl.indexOf('load_skill') >= 0 || tl.indexOf('skill') >= 0) {
         } else if (tl.indexOf('load_skill') >= 0 || tl.indexOf('skill') >= 0) {
             var skillName = args.skill_name || '';
             console.log('[Skill] 查询技能: '+skillName);
@@ -2178,6 +2300,11 @@ async function start() {
     db.run('CREATE TABLE IF NOT EXISTS writing_quality_ratings (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, chapter_id INTEGER, user_rating INTEGER, edit_distance_ratio REAL, ai_similarity_score REAL, agent_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS optimized_skills (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, name_cn TEXT NOT NULL, name_en TEXT DEFAULT \'\', description TEXT DEFAULT \'\', content TEXT NOT NULL, json_schema TEXT DEFAULT \'\', source TEXT DEFAULT \'auto_generated\', is_enabled INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS user_tools (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, skill_id INTEGER, name TEXT NOT NULL, description TEXT DEFAULT \'\', parameters_json TEXT DEFAULT \'{}\', is_enabled INTEGER DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS agent_crawler_data (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, platform TEXT DEFAULT \'\', book_name TEXT NOT NULL, author TEXT DEFAULT \'\', cover_url TEXT DEFAULT \'\', intro TEXT DEFAULT \'\', tags TEXT DEFAULT \'[]\', status TEXT DEFAULT \'pending\', source TEXT DEFAULT \'llm\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    // 迁移：给旧表加 source 列（如果不存在）
+    try { db.run('ALTER TABLE agent_crawler_data ADD COLUMN source TEXT DEFAULT \'llm\''); } catch(e) {}
+    // 迁移：创建去重唯一索引（如果不存在）
+    try { db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_crawler_unique ON agent_crawler_data (project_id, platform, book_name)'); } catch(e) {}
 
 // ==================== 爬虫Agent ====================
 
@@ -2193,12 +2320,16 @@ app.post('/api/writing-projects/:id/crawl-books', auth, (req, res) => {
             var clean = (result.content||'').replace(/```json\s*|\s*```/g, '').trim();
             var books = JSON.parse(clean);
             if (books['书籍']) {
+                var inserted2 = 0;
                 books['书籍'].forEach(function(b) {
-                    dbRun('INSERT INTO agent_crawler_data (project_id, platform, book_name, author, cover_url, intro, tags, status) VALUES (?,?,?,?,?,?,?,?)',
-                        [projectId, platform||'', b['书名']||'', b['作者']||'', b['封面']||'', b['简介']||'', JSON.stringify(b['标签']||[]), 'pending']);
+                    try {
+                        dbRun('INSERT INTO agent_crawler_data (project_id, platform, book_name, author, cover_url, intro, tags, status, source) VALUES (?,?,?,?,?,?,?,?,?)',
+                            [projectId, platform||'', b['书名']||'', b['作者']||'', b['封面']||'', b['简介']||'', JSON.stringify(b['标签']||[]), 'pending', 'web']);
+                        inserted2++;
+                    } catch(e) { if (e.message && e.message.indexOf('UNIQUE')>=0) console.log('[Writing 爬虫] 重复跳过: '+b['书名']); else console.error('[Writing 爬虫] 插入失败:', e.message); }
                 });
-                saveDB();
-                console.log('[Writing 爬虫] 解析到 '+books['书籍'].length+' 本书');
+                if (inserted2 > 0) saveDB();
+                console.log('[Writing 爬虫] 解析到 '+inserted2+' 本书');
             }
         } catch(e) { console.log('[Writing 爬虫] JSON解析失败:', e.message); }
         res.json({ content:result.content, parsed:true });
