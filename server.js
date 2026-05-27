@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const child_process = require('child_process');
 const initSqlJs = require('sql.js');
 const multer = require('multer');
 const path = require('path');
@@ -387,7 +388,7 @@ var ORCHESTRATOR_TOOLS = [
   { type: "function", function: { name: "load_skill", description: "加载指定的技能指南。当你需要执行某个操作但不清楚具体流程时（如角色设计、大纲生成等），先调用此工具获取该技能的详细指南，然后再按指南操作。", parameters: { type: "object", properties: { skill_name: { type: "string", description: "要加载的技能名称，如：角色设计指南、大纲设计指南" } }, required: ["skill_name"] } } },
   { type: "function", function: { name: "generate_outline", description: "根据用户需求生成小说分卷分章大纲。返回结构化JSON。当用户确认需求后调用。", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "generate_characters", description: "根据小说信息和大纲设计角色档案。返回JSON包含角色姓名、外貌、性格、背景、能力等。在大纲生成后或用户要求时调用。", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "crawl_books", description: "爬取/搜索同类热门小说数据作为创作参考。仅在用户已明确授权且用户本人明确说出了目标平台名称后调用。严禁自行推断或猜测平台。", parameters: { type: "object", properties: { platform: { type: "string", description: "用户明确说出的目标平台名称（番茄/起点/晋江/纵横/飞卢/QQ阅读/七猫/掌阅/息壤/菠萝包/刺猬猫等），严禁自行推断" } }, required: ["platform"] } } }
+  { type: "function", function: { name: "crawl_books", description: "爬取/搜索同类热门小说数据作为创作参考。仅在用户已明确授权且用户本人明确说出了目标平台名称后调用。严禁自行推断或猜测平台。", parameters: { type: "object", properties: { platform: { type: "string", description: "用户明确说出的目标平台名称（番茄/起点/晋江/纵横/飞卢/QQ阅读/七猫/掌阅/息壤/菠萝包/刺猬猫等），严禁自行推断" }, keyword: { type: "string", description: "搜索关键词。根据对话历史和用户创作方向推断最相关的搜索词（如'玄幻重生'、'都市修仙'），用于在平台搜索同类热门书。" } }, required: ["platform", "keyword"] } } }
 ];
 
 // 爬虫系统提示（需定义在executeToolAsync之前，crawl_books分支会引用）
@@ -398,7 +399,7 @@ const iconv = require('iconv-lite');
 
 // 平台搜索URL映射（{keyword}会被替换为搜索词）
 var CRAWL_URLS = {
-  '番茄': { url: 'https://fanqienovel.com/search?keyword={keyword}', enc: 'utf-8' },
+  '番茄': { url: 'https://fanqienovel.com/search/{keyword}', enc: 'utf-8', cdp: true }, // 字节安全SDK，需CDP模式
   '起点': { url: 'https://www.qidian.com/search?kw={keyword}', enc: 'utf-8' },
   '晋江': { url: 'https://www.jjwxc.net/search.php?kw={keyword}', enc: 'gbk' },
   '飞卢': { url: 'https://b.faloo.com/search?kw={keyword}', enc: 'utf-8' },
@@ -411,23 +412,172 @@ var CRAWL_URLS = {
   '纵横': { url: 'https://www.zongheng.com/search?keyword={keyword}', enc: 'utf-8' }
 };
 
-// 爬取平台搜索页HTML（带超时、编码处理、重试）
-function crawlWebPage(platform, keyword) {
+// Python 解释器路径（Scrapling 安装在 Python 3.13）
+var PYTHON_EXE = '"C:/Users/user/AppData/Local/Programs/Python/Python313/python.exe"';
+var SCRAPER_BRIDGE = '"D:/工作文件夹/AI动漫制作/科研文件夹/新-无限画布本地部署/scraper_bridge.py"';
+
+// 通过 Python Scrapling 桥接抓取（优先使用，失败则降级到原生 fetch）
+function _fetchWithScrapling(url, platform, cdpMode, onCaptcha, onCaptchaSolved, callback) {
+    var cdpFlag = cdpMode ? ' --cdp' : '';
+    var timeout = cdpMode ? 420000 : 30000; // CDP：420s > 桥接内部330s轮询，避免node先杀python
+    console.log('[Crawler] Scrapling桥接: '+platform+(cdpMode?' [CDP模式]':''));
+
+    if (cdpMode) {
+        // CDP 模式：stdout 逐行 JSON 事件，实时读取
+        var pyExe = PYTHON_EXE.replace(/"/g, '');
+        var bridgePath = SCRAPER_BRIDGE.replace(/"/g, '');
+        var cmdStr = '"' + pyExe + '" "' + bridgePath + '" --url "' + url + '" --platform "' + platform + '" --cdp';
+        var spawnOpts = {
+            shell: true,
+            env: Object.assign({}, process.env, { PYTHONUNBUFFERED: '1' })
+        };
+        console.log('[Crawler] CDP spawn');
+        var proc = child_process.spawn(cmdStr, [], spawnOpts);
+        var spawnTimer = setTimeout(function() {
+            console.log('[Crawler] CDP 超时，终止进程');
+            try { proc.kill(); } catch(e) {}
+        }, timeout);
+        var stdoutBuf = '', lastResult = null, stderrAcc = '';
+        proc.stdout.on('data', function(data) {
+            stdoutBuf += data.toString();
+            // 逐行解析 JSON 事件
+            var lines = stdoutBuf.split('\n');
+            stdoutBuf = lines.pop() || '';  // 最后一段可能不完整，保留
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim();
+                if (!line) continue;
+                try {
+                    var evt = JSON.parse(line);
+                    console.log('[Crawler] event:', evt.event, evt.phase||'');
+                    if (evt.event === 'captcha') {
+                        if (evt.phase === 'detected') {
+                            console.log('[Crawler] 验证码出现 → 通知前端');
+                            if (onCaptcha) onCaptcha();
+                        } else if (evt.phase === 'solved') {
+                            console.log('[Crawler] 验证码已解决');
+                            if (onCaptchaSolved) onCaptchaSolved();
+                        }
+                    }
+                    if (evt.event === 'result') {
+                        lastResult = evt;
+                    }
+                } catch(e) {
+                    console.log('[Crawler] 非JSON行:', line.substring(0, 100));
+                }
+            }
+        });
+        proc.stderr.on('data', function(data) { stderrAcc += data.toString(); });
+        proc.on('close', function(code) {
+            clearTimeout(spawnTimer);
+            if (stderrAcc) console.log('[Crawler] stderr:', stderrAcc.substring(0, 300));
+            if (lastResult) {
+                // 有结果事件
+                if (lastResult.ok && lastResult.html) {
+                    callback({
+                        html: lastResult.html,
+                        url: lastResult.url || url,
+                        cdp: !!lastResult.cdp
+                    }, null);
+                } else {
+                    callback(null, lastResult.error || 'CDP 无结果');
+                }
+            } else {
+                callback(null, 'CDP bridge 无输出 (code='+code+')');
+            }
+        });
+        proc.on('error', function(err) {
+            clearTimeout(spawnTimer);
+            callback(null, err.message);
+        });
+    } else {
+        // 非CDP模式用 exec
+        var cmd = PYTHON_EXE + ' ' + SCRAPER_BRIDGE + ' --url "' + url + '" --platform "' + platform + '"';
+        child_process.exec(cmd, { timeout: timeout, maxBuffer: 2 * 1024 * 1024 }, function(err, stdout, stderr) {
+            if (err) { callback(null, err.message); return; }
+            _parseScraplingResult(stdout, stderr, platform, url, callback);
+        });
+    }
+}
+
+function _parseScraplingResult(stdout, stderr, platform, url, callback) {
+    var captchaMsg = '';
+    if (stderr && stderr.indexOf('CAPTCHA_DETECTED') >= 0) {
+        captchaMsg = '\n⚠️ 浏览器触发了验证码，请在 Chrome 窗口中手动完成验证后重试';
+    }
+    try {
+        var result = JSON.parse(stdout);
+        if (result.ok && result.html && result.html.length > 100) {
+            var logMsg = result.cdp ? 'Scrapling CDP成功 数据长度=' : 'Scrapling成功 HTML长度=';
+            console.log('[Crawler] '+logMsg+result.html.length);
+            var html = result.cdp ? result.html : _cleanHTML(result.html);
+            callback({ html: html, url: result.url || url, cdp: !!result.cdp }, null);
+        } else {
+            var errDetail = (result.error || '内容过短') + captchaMsg;
+            console.log('[Crawler] Scrapling返回无效:', errDetail);
+            callback(null, errDetail);
+        }
+    } catch(e) {
+        console.log('[Crawler] Scrapling JSON解析失败:', e.message);
+        callback(null, e.message + captchaMsg);
+    }
+}
+
+// 模糊匹配平台名（LLM 可能传 "番茄小说" 而非 "番茄"）
+// 返回 { key: 标准化平台名, cfg: 平台配置 }
+function _resolvePlatform(rawPlatform) {
+    if (!rawPlatform) return null;
+    // 精确匹配
+    if (CRAWL_URLS[rawPlatform]) return { key: rawPlatform, cfg: CRAWL_URLS[rawPlatform] };
+    // 模糊匹配：配置key包含在输入中，或输入包含在配置key中
+    var keys = Object.keys(CRAWL_URLS);
+    for (var i = 0; i < keys.length; i++) {
+        if (rawPlatform.indexOf(keys[i]) >= 0 || keys[i].indexOf(rawPlatform) >= 0) {
+            console.log('[Crawler] 平台模糊匹配: "'+rawPlatform+'" → "'+keys[i]+'"');
+            return { key: keys[i], cfg: CRAWL_URLS[keys[i]] };
+        }
+    }
+    return null;
+}
+
+// 爬取平台搜索页HTML（CDP模式 → Scrapling → 原生fetch 三级降级）
+function crawlWebPage(platform, keyword, onCaptcha, onCaptchaSolved) {
     return new Promise(function(resolve) {
-        var cfg = CRAWL_URLS[platform];
-        if (!cfg) { resolve({ error: '不支持的平台: '+platform, html: '', url: '' }); return; }
+        var resolved = _resolvePlatform(platform);
+        if (!resolved) { resolve({ error: '不支持的平台: '+platform, html: '', url: '' }); return; }
+        var normalizedPlatform = resolved.key;  // 标准化后的平台名
+        var cfg = resolved.cfg;
         var url = cfg.url.replace('{keyword}', encodeURIComponent(keyword));
         var enc = cfg.enc || 'utf-8';
-        console.log('[Crawler] 开始爬取: '+platform+' URL='+url);
-        _doFetch(url, enc, 1, function(result) {
-            if (result.error) console.log('[Crawler] 爬取失败: '+result.error);
-            else console.log('[Crawler] 爬取成功 HTML长度='+result.html.length);
-            resolve(result);
+        var useCdp = !!cfg.cdp; // 标记是否需要 CDP 模式
+        console.log('[Crawler] 开始爬取: '+normalizedPlatform+' URL='+url+(useCdp?' [CDP]':''));
+
+        _fetchWithScrapling(url, normalizedPlatform, useCdp, onCaptcha, onCaptchaSolved, function(scrapResult, scrapError) {
+            if (scrapResult) { resolve(scrapResult); return; }
+            // CDP 平台失败后不降级到原生 fetch（反爬 SDK 会拦截），直接返回错误
+            if (useCdp) {
+                var hasCaptcha = scrapError && scrapError.indexOf('验证') >= 0;
+                console.log('[Crawler] CDP模式失败'+(hasCaptcha?'（验证码）':'（连接问题）'));
+                resolve({
+                    error: scrapError || 'CDP连接失败',
+                    html: '',
+                    url: url,
+                    needCdp: !hasCaptcha,  // 验证码超时 ≠ CDP未配置
+                    hasCaptcha: hasCaptcha
+                });
+                return;
+            }
+            // 非CDP平台：降级到原生 Node.js fetch
+            console.log('[Crawler] 降级为原生fetch: '+normalizedPlatform);
+            _doFetchNative(url, enc, 1, function(result) {
+                if (result.error) console.log('[Crawler] 爬取失败: '+result.error);
+                else console.log('[Crawler] 爬取成功 HTML长度='+result.html.length);
+                resolve(result);
+            });
         });
     });
 }
 
-function _doFetch(url, enc, attempt, callback) {
+function _doFetchNative(url, enc, attempt, callback) {
     var controller = new AbortController();
     var timer = setTimeout(function() { controller.abort(); }, 12000);
     fetch(url, {
@@ -441,7 +591,7 @@ function _doFetch(url, enc, attempt, callback) {
     }).then(function(r) {
         clearTimeout(timer);
         if (!r.ok) {
-            if (attempt < 2) { console.log('[Crawler] HTTP '+r.status+' 重试#'+attempt); return _doFetch(url, enc, attempt+1, callback); }
+            if (attempt < 2) { console.log('[Crawler] HTTP '+r.status+' 重试#'+attempt); return _doFetchNative(url, enc, attempt+1, callback); }
             callback({ error: 'HTTP '+r.status, html: '', url: url }); return;
         }
         // 读取响应为 ArrayBuffer 以处理编码
@@ -462,7 +612,7 @@ function _doFetch(url, enc, attempt, callback) {
         });
     }).catch(function(err) {
         clearTimeout(timer);
-        if (attempt < 2) { console.log('[Crawler] 请求超时 重试#'+attempt); return _doFetch(url, enc, attempt+1, callback); }
+        if (attempt < 2) { console.log('[Crawler] 请求超时 重试#'+attempt); return _doFetchNative(url, enc, attempt+1, callback); }
         callback({ error: err.message, html: '', url: url });
     });
 }
@@ -586,7 +736,7 @@ function _callSubAgentLLM(projectId, userId, messages, agentType, tools, streamC
 }
 
 // _continueMsgs: 续接模式时的历史消息数组（子智能体request_tool后继续对话）
-function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback, _continueMsgs) {
+function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback, _continueMsgs, streamStartedAt, sseRes) {
     return new Promise(function(resolve) {
         try { var args = JSON.parse(argsJson || '{}'); } catch(e) { args = {}; }
         var tl = toolName.toLowerCase();
@@ -672,11 +822,35 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
         } else if (tl.indexOf('crawl') >= 0 || toolName === 'crawl_books') {
             var proj3 = queryOne('SELECT * FROM writing_projects WHERE id=?', [projectId]);
             var platform = args.platform || '番茄';
-            // 从项目信息生成搜索关键词
-            var keyword = (proj3.genre||'') + ' ' + (proj3.sub_genre||'') + ' 小说';
+            // 搜索关键词：优先使用主智能体推断的 keyword，其次用项目类型字段拼凑
+            var keyword = (args.keyword||'').trim();
+            if (!keyword) {
+                keyword = ((proj3.genre||'') + ' ' + (proj3.sub_genre||'')).trim();
+                if (keyword) keyword += ' 小说';
+                else keyword = '热门小说';
+            }
             console.log('[Writing 爬虫] 项目='+projectId+' 平台='+platform+' 关键词='+keyword);
             // 第1层：真实网页爬取
-            crawlWebPage(platform, keyword).then(function(crawlResult) {
+            // onCaptcha 回调：通过 streamCallback 发通知到前端流式气泡
+            // 验证码回调：通过 streamCallback（含res闭包）+ saveStreamBuffer 双通道
+            var onCaptcha = function() {
+                console.log('[Writing 爬虫] CAPTCHA → 发送captcha_notice到前端');
+                try {
+                    if (sseRes && !sseRes.destroyed) {
+                        sseRes.write('data: '+JSON.stringify({type:'captcha_notice', message:'🔐 检测到人机验证！请在弹出的 Chrome 窗口中完成滑块验证。'})+'\n\n');
+                        console.log('[Writing 爬虫] captcha_notice已发送');
+                    }
+                } catch(e) { console.log('[Writing 爬虫] captcha_notice失败:', e.message); }
+            };
+            var onCaptchaSolved = function() {
+                console.log('[Writing 爬虫] CAPTCHA solved → 通知前端移除浮动条');
+                try {
+                    if (sseRes && !sseRes.destroyed) {
+                        sseRes.write('data: '+JSON.stringify({type:'captcha_notice', phase:'solved', message:'✅ 验证通过，正在获取数据...'})+'\n\n');
+                    }
+                } catch(e) {}
+            };
+            crawlWebPage(platform, keyword, onCaptcha, onCaptchaSolved).then(function(crawlResult) {
                 if (crawlResult.html && !crawlResult.error) {
                     // HTML 获取成功 → 喂 LLM 提取
                     var ctx3 = '目标平台：'+platform+'\n项目：'+proj3.title+'\n类型：'+(proj3.genre||'')+' '+(proj3.sub_genre||'')+'\n\n网页URL：'+crawlResult.url+'\n网页HTML：\n'+crawlResult.html;
@@ -696,8 +870,8 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
                             } catch(e) { if (e.message && e.message.indexOf('UNIQUE')>=0) console.log('[Writing 爬虫] 重复跳过: '+b['书名']); else console.error('[Writing 爬虫] 插入失败:', e.message); }
                         });
                         if (inserted > 0) saveDB();
-                        // 第2层：提取不足3本 → LLM 补充
-                        if (inserted < 3) {
+                        // 第2层：提取不足3本 → LLM 补充（仅非CDP模式，CDP爬的是真实数据不用LLM编造）
+                        if (inserted < 3 && !crawlResult.cdp) {
                             var hist3 = queryAll('SELECT * FROM agent_conversations WHERE project_id=? ORDER BY created_at ASC LIMIT 100', [projectId]);
                             var supp = '目标平台：'+platform+'\n项目：'+proj3.title+'\n类型：'+(proj3.genre||'')+' '+(proj3.sub_genre||'')+'\n\n';
                             hist3.forEach(function(m) { if (m.role==='user') supp += '用户：'+m.content+'\n'; else if (m.role==='assistant'&&m.agent_type==='orchestrator') supp += '主Agent：'+m.content+'\n'; });
@@ -719,9 +893,41 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
                         }
                     }, streamCallback);
                 } else {
-                    // 第3层：网页获取失败 → 返回错误
-                    console.log('[Writing 爬虫] 网页获取失败: '+crawlResult.error);
-                    resolve({ error: crawlResult.error, summary: '爬取失败：无法访问【'+platform+'】网站，请更换平台或稍后重试' });
+                    // 第3层：网页获取失败 → 返回详细错误供前端气泡展示
+                    var errDetail = crawlResult.error || '未知错误';
+                    console.log('[Writing 爬虫] 网页获取失败: '+errDetail+' 平台='+platform+' URL='+crawlResult.url);
+                    var errContent, errSummary;
+                    if (crawlResult.hasCaptcha) {
+                        // 验证码超时：CDP已连接但验证码未通过
+                        errContent = '🔐 '+platform+' 触发了人机验证\n\n'
+                            + '已通过真实 Chrome 浏览器访问了搜索页面，但触发了验证码保护。\n\n'
+                            + '请在弹出的 Chrome 窗口中手动完成验证（通常点一下就行），\n'
+                            + '验证通过后回到写作页面重新发送爬取指令即可。\n\n'
+                            + '提示：如果验证后页面已加载出搜索结果，说明验证已通过，\n'
+                            + '此时重试爬取通常能直接拿到数据。';
+                        errSummary = '触发验证码：请在Chrome窗口中完成验证后重试';
+                    } else if (crawlResult.needCdp) {
+                        // CDP 平台需要用户手动开启 Chrome 调试模式
+                        errContent = '❌ '+platform+' 网站爬取需要 CDP 模式\n\n'
+                            + '该平台使用了较强的反爬保护，需要通过真实浏览器获取数据。\n\n'
+                            + '系统已尝试自动启动 Chrome 调试模式，但连接失败。\n'
+                            + '请手动执行：\n'
+                            + '1. 关闭所有 Chrome 窗口\n'
+                            + '2. Win+R 输入：chrome.exe --remote-debugging-port=9222\n'
+                            + '3. 保持窗口打开，回到写作页面重试爬取';
+                        errSummary = '需要CDP模式：请以调试模式启动Chrome后重试';
+                    } else {
+                        errContent = '❌ 网页爬取失败\n\n'
+                            + '错误信息：'+errDetail+'\n'
+                            + '目标平台：'+platform+'\n\n'
+                            + '可能原因：\n'
+                            + '1. 网站搜索接口地址已变更或失效\n'
+                            + '2. 目标网站存在反爬虫机制\n'
+                            + '3. 当前网络环境限制\n\n'
+                            + '💡 建议尝试更换平台（如起点、纵横等）或稍后重试。';
+                        errSummary = '爬取失败：无法访问【'+platform+'】网站，请更换平台或稍后重试';
+                    }
+                    resolve({ result: errContent, error: errDetail, summary: errSummary });
                 }
             });
         } else if (tl.indexOf('load_skill') >= 0 || tl.indexOf('skill') >= 0) {
@@ -984,7 +1190,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                         saveStreamBuffer(projectId, _subC.substring(0,500), '', streamStartedAt, 'tool_calling', actualSubAgent, _subC, _subT);
                         try { res.write('data: '+JSON.stringify({type:'tool_stream',tool:toolName,subAgent:actualSubAgent,phase:delta.type,delta:delta.delta})+'\n\n'); } catch(e) {}
                     };
-                    var toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId, streamCallback);
+                    var toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId, streamCallback, null, streamStartedAt, res);
                     console.log('[Write LLM] 工具完成: '+toolName+' '+toolResult.summary);
                     // 子智能体请求工具循环：处理request_tool
                     var subAgentMsgs = toolResult._subAgentMsgs;
@@ -1001,7 +1207,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                         // 通知前端
                         res.write('data: '+JSON.stringify({type:'tool_request',tool:toolName,subAgent:actualSubAgent,requested:requestedTool,args:requestedArgs})+'\n\n');
                         // 执行请求的工具
-                        var reqResult = await executeToolAsync(requestedTool, JSON.stringify(requestedArgs), projectId, req.userId);
+                        var reqResult = await executeToolAsync(requestedTool, JSON.stringify(requestedArgs), projectId, req.userId, null, null, null, null);
                         console.log('[Write LLM] 子智能体请求的工具完成: '+requestedTool+' '+reqResult.summary);
                         // 将工具结果注入子智能体会话
                         var toolResultMsg = { role: 'tool', tool_call_id: reqTc.id, content: JSON.stringify(reqResult) };
@@ -1013,7 +1219,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                             saveStreamBuffer(projectId, _subC.substring(0,500), '', streamStartedAt, 'tool_calling', actualSubAgent, _subC, _subT);
                             try { res.write('data: '+JSON.stringify({type:'tool_stream',tool:toolName,subAgent:actualSubAgent,phase:delta.type,delta:delta.delta})+'\n\n'); } catch(e) {}
                         };
-                        toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId, streamCallback, subAgentMsgs);
+                        toolResult = await executeToolAsync(toolName, toolArgs, projectId, req.userId, streamCallback, subAgentMsgs, streamStartedAt, res);
                         console.log('[Write LLM] 子智能体继续完成: '+toolName+' '+toolResult.summary);
                         _accContent += toolResult.result || '';
                         _accThinking += toolResult.thinking || '';

@@ -1955,7 +1955,25 @@ async function doStreamingCall(text) {
             }, 180000);
           }
           // 事件分派
-          if (evt.type === 'thinking') {
+          if (evt.type === 'captcha_notice') {
+            if (evt.phase === 'solved') {
+              // 验证码已解决 → 移除浮动条
+              var bar = document.getElementById('captchaFloatBar');
+              if (bar) { bar.remove(); }
+              toast(evt.message||'验证已通过', 'info');
+            } else {
+              toast(evt.message||'请完成人机验证', 'warn');
+              var captchaBar = document.getElementById('captchaFloatBar');
+              if (!captchaBar) {
+                captchaBar = document.createElement('div');
+                captchaBar.id = 'captchaFloatBar';
+                captchaBar.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1000;background:rgba(245,166,35,0.95);color:#fff;padding:16px 32px;border-radius:12px;font-size:15px;font-weight:600;box-shadow:0 4px 30px rgba(0,0,0,0.4);cursor:pointer;animation:captchaPulse 1.5s infinite;';
+                captchaBar.textContent = evt.message || '🔐 请在Chrome窗口中完成人机验证';
+                captchaBar.onclick = function() { this.remove(); };
+                document.body.appendChild(captchaBar);
+              }
+            }
+          } else if (evt.type === 'thinking') {
             if (!hasStartedThinking) { hasStartedThinking = true; startThinkingTimer(); }
             appendThinkingDelta(evt.delta);
           } else if (evt.type === 'content') {
@@ -2764,7 +2782,7 @@ function _ensureToolBubble(agentType) {
     + '<div class="bubble">'
     + '<div style="font-size:11px;color:var(--accent);padding:4px;margin:-4px 0 -6px -4px;cursor:pointer;display:inline-block;" title="点击改名" onclick="event.stopPropagation();renameAgent(\''+escHtml(agentType)+'\')">'+escHtml(name)+'</div>'
     + '<span class="think-toggle stream-think-toggle" onclick="var b=this.nextElementSibling;var show=b.classList.toggle(\'show\');var lb=this.querySelector(\'.toggle-label\');if(lb)lb.textContent=show?\'💭 收起\':\'💭 处理中...\'" style="cursor:pointer;">'
-    + '<span class="toggle-label">💭 处理中...</span> '
+    + '<span class="toggle-label">💭 处理中...</span> '<span class="stream-timer">等待中...</span> '
     + '<span class="typing-dots"><b></b><b></b><b></b></span>'
     + '</span>'
     + '<div class="think-body show stream-think-body" style="max-height:200px;overflow-y:auto;text-align:left;"></div>'

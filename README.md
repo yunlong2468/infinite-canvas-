@@ -12,11 +12,22 @@
 | 认证 | JWT + session_token 多设备互踢 |
 | 实时 | SSE (Server-Sent Events) |
 | LLM | OpenAI 兼容 API (分镜生成 + 图片生成) |
+| 爬虫 | Python 3.10+ Scrapling（桥接 Node.js，可选降级） |
 | 代码量 | ~5500 行 |
 
 ## 快速开始（零基础也能上手）
 
-### 第一步：安装 Node.js
+### 方式一：一键安装（推荐）
+
+1. 双击项目根目录下的 **`setup.bat`**
+2. 脚本会自动检测环境、安装依赖、启动服务
+3. 浏览器访问 **http://localhost:3001**
+
+> 首次运行会下载 Scrapling 浏览器依赖（约 300MB），请保持网络畅通。
+
+### 方式二：手动安装
+
+#### 第一步：安装 Node.js
 
 Node.js 是让电脑运行 JavaScript 程序的工具，所有操作都需要它。
 
@@ -56,7 +67,29 @@ git clone https://github.com/yunlong2468/infinite-canvas-.git
    ```
    看到 `added XX packages` 就完成了。
 
-### 第四步：启动服务
+#### 第四步（可选）：安装 Python 爬虫依赖
+
+> **不装也能用！** 缺少 Python 时，爬虫功能自动降级为 Node.js 原生请求，不影响其他功能。
+
+写作模块的"爬取参考书籍"功能需要 Scrapling（自适应爬虫框架）提供更好的反爬能力：
+
+1. 安装 **Python 3.10+**：https://www.python.org/downloads/
+   - 安装时务必勾选 **"Add Python to PATH"**
+2. 在项目目录下运行：
+   ```
+   pip install -r requirements.txt
+   scrapling install
+   ```
+3. `scrapling install` 会下载 Chromium 浏览器（约 300MB），仅在爬取需 JS 渲染的网站时使用。
+
+> **🍅 番茄小说特别说明**：该平台使用了字节跳动安全 SDK，普通爬取无法获取数据。
+> 需要以 **CDP 调试模式** 启动 Chrome 后爬取：
+> ```
+> chrome.exe --remote-debugging-port=9222
+> ```
+> 启动后保持 Chrome 窗口打开，再在写作页面发起爬取即可自动连接。
+
+#### 第五步：启动服务
 
 在同一个命令提示符窗口中继续输入：
 ```
@@ -191,10 +224,15 @@ node server.js
 
 ```
 新-无限画布本地部署/
-├── server.js              # Express 后端 (~910行)
-├── package.json
+├── server.js              # Express 后端 (~5500行)
+├── package.json           # Node.js 依赖声明
+├── requirements.txt       # Python 依赖声明（爬虫桥接）
+├── setup.bat              # Windows 一键环境安装脚本
+├── scraper_bridge.py      # Python Scrapling → Node.js 桥接
 ├── public/
-│   ├── canvas.html        # 画布主页面 (~3266行)
+│   ├── canvas.html        # 画布主页面
+│   ├── write.html         # 写作页面
+│   ├── write.js           # 写作前端逻辑
 │   ├── projects.html      # 项目列表
 │   ├── agents.html        # 智能体管理
 │   ├── settings.html      # 生图 API 设置
@@ -203,8 +241,8 @@ node server.js
 │   └── storyboard-keyframe-generator/
 │       ├── SKILL.md       # 分镜关键帧生成提示词规范
 │       └── references/
-│           ├── 分镜关键帧提示词.json  # 输出结构参考
-│           └── image_gen.py          # Python 生图参考
+│           ├── 分镜关键帧提示词.json
+│           └── image_gen.py
 ├── uploads/               # 上传文件（gitignore）
 └── data.db                # SQLite 数据库（gitignore）
 ```
