@@ -6,14 +6,15 @@
 
 | 层 | 技术 |
 |---|------|
-| 后端 | Node.js + Express (~3000行) |
+| 后端 | Node.js + Express (~6000行) |
 | 数据库 | SQL.js (SQLite 文件持久化) |
-| 前端 | 原生 HTML/CSS/JS (~4000行) |
+| 前端 | 原生 HTML/CSS/JS (~7000行) |
 | 认证 | JWT + session_token 多设备互踢 |
 | 实时 | SSE (Server-Sent Events) 流式推送 |
 | LLM | OpenAI 兼容 API (DeepSeek/OpenAI/自定义) |
-| 爬虫 | Python 3.10+ Scrapling + Playwright CDP + fontTools字形解码 |
-| 多智能体 | 编排器 + 大纲/角色/爬虫/技能优化子智能体 + 动态工具 |
+| 爬虫 | Python 3.10+ Scrapling + Playwright CDP + fontTools字形解码 + PaddleOCR |
+| 多智能体 | 编排器 + 大纲/角色/爬虫/技能优化子智能体 + 动态工具 + 工具循环 |
+| 开发者工具 | 前后端统一日志面板(SSE实时推送) + console拦截 + 关键字过滤 |
 
 ## 快速开始（零基础也能上手）
 
@@ -45,13 +46,13 @@ Node.js 是让电脑运行 JavaScript 程序的工具，所有操作都需要它
 ### 第二步：下载项目
 
 **方式一（推荐，无需 git）**：
-1. 打开 https://github.com/yunlong2468/infinite-canvas-
+1. 打开 https://github.com/yunlong2468/multi-purpose-creative-tool
 2. 点击绿色 **Code** 按钮 → **Download ZIP**
 3. 解压到你喜欢的文件夹（如 `D:\无限画布`）
 
 **方式二（会 git 的用户）**：
 ```bash
-git clone https://github.com/yunlong2468/infinite-canvas-.git
+git clone https://github.com/yunlong2468/multi-purpose-creative-tool.git
 ```
 
 ### 第三步：安装依赖
@@ -197,6 +198,8 @@ node server.js
 - [x] 人机验证码浮动通知 + 自动等待
 - [x] 撤销恢复（撤回对话同步回滚章/卷/角色）
 - [x] LLM 多轮工具调用 + 子智能体 request_tool 递归
+- [x] 开发者日志面板（前后端console拦截+SSE实时推送+等级过滤+关键字搜索+面板拖拽调整高度）
+- [x] 双气泡去重（流式缓冲残留检测 + DB内存双重去重 + callOutlineLLM skipDbSave 源头防重复）
 
 ### 爬虫架构（三级降级）
 
@@ -216,7 +219,6 @@ node server.js
 | 功能 | 说明 | 状态 |
 |------|------|------|
 | 撤销/重做 | Ctrl+Z / Ctrl+Y 画布操作历史 | ✅ |
-| 批量生图 | 帧节点一键生成所有关键帧图片 | ⬜ |
 | 图片裁剪 | 节点内裁剪工具，固定比例裁切 | ⬜ |
 | 节点编组 | 多节点合并为组，统一移动/复制 | ⬜ |
 | 键盘快捷键 | Ctrl+C/X/V/Z 剪贴板+撤销 | ✅ |
@@ -229,6 +231,7 @@ node server.js
 | 分镜时间轴 | 横向时间轴视图，关键帧按时间排列 | ⬜ |
 | 翻页书预览 | 多帧连续播放动画预览 | ⬜ |
 | 视频节点播放 | 内嵌视频播放器 + 截帧功能 | ⬜ |
+| 批量生图 | 帧节点一键生成所有关键帧图片 | ⬜ |
 | 协作编辑 | WebSocket 多用户实时协作 | ⬜ |
 | 云端备份 | GitHub/Gitee 自动备份画布数据 | ⬜ |
 | 导出功能 | 导出画布为图片/PDF/JSON | ⬜ |
@@ -239,11 +242,7 @@ node server.js
 |------|------|------|
 | 插件系统 | 第三方插件扩展 | ⬜ |
 | AI 辅助分镜 | LLM 从文字剧本直接生成分镜脚本 | ⬜ |
-| 角色库 | 角色设定集中管理，自动匹配生图 | ✅ |
-| 小说爬虫 | 多平台热门书籍爬取参考 | ✅ |
-| 多智能体写作 | 编排器+子智能体协同创作 | ✅ |
-| CDP 浏览器自动化 | 绕过强反爬网站保护 | ✅ |
-| 字体反爬解码 | 字形比对破解PUA乱码 | ✅ |
+| 开发者日志面板 | 前后端console拦截+SSE实时推送 | ✅ |
 | 移动端适配 | 响应式布局，平板可用 | ⬜ |
 | 外部工具对接 | AE/PR/ComfyUI 工作流集成 | ⬜ |
 
@@ -258,12 +257,14 @@ node server.js
 ├── requirements.txt       # Python 依赖声明（Scrapling爬虫）
 ├── setup.bat              # Windows 一键环境安装脚本
 ├── chrome_debug.bat       # Chrome CDP调试模式启动器
-├── scraper_bridge.py      # Scrapling → Node.js 爬虫桥接
-├── glyph_decoder.py       # PUA字体字形解码器（破解反爬乱码）
+├── scraper_bridge.py      # Scrapling → Node.js 爬虫桥接（~1200行）
+├── glyph_decoder.py       # PUA字体字形解码器（破解反爬乱码，~600行）
+├── pua_mapping_custom.json # 自定义字形映射表
+├── image_gen.py           # AI生图桥接模块
 ├── public/
 │   ├── canvas.html        # 画布主页面
 │   ├── write.html         # 写作页面（多智能体聊天）
-│   ├── write.js           # 写作前端逻辑 (~2800行)
+│   ├── write.js           # 写作前端逻辑 (~3200行)
 │   ├── projects.html      # 项目列表
 │   ├── agents.html        # 智能体管理
 │   ├── settings.html      # 生图 API 设置
@@ -272,16 +273,21 @@ node server.js
 │   └── storyboard-keyframe-generator/
 │       ├── SKILL.md       # 分镜关键帧生成提示词规范
 │       └── references/
+├── data/                  # 运行时数据（stream_buffer等）
 ├── uploads/               # 上传文件（gitignore）
 └── data.db                # SQLite 数据库（gitignore）
 ```
 
-## 配置
+## 核心配置
 
-| 环境变量 | 默认值 | 说明 |
-|----------|--------|------|
-| `PORT` | 3001 | 服务端口 |
-| `JWT_SECRET` | 内置默认值 | JWT 签名密钥 |
+| 配置项 | 存储位置 | 说明 |
+|--------|----------|------|
+| `PORT` | 环境变量 | 服务端口，默认 3001 |
+| `JWT_SECRET` | DB system_config 表 | JWT 签名密钥（首次启动自动生成） |
+| `PADDLEOCR_TOKEN` | DB system_config 表 | PaddleOCR 高精度字体解码（可选） |
+| LLM API Key | DB agents 表 | 智能体管理页面配置，支持多模型 |
+
+> 密钥已从硬编码/环境变量迁移至数据库，支持动态管理和 API Key 遮盖显示（`***`）。
 
 ## License
 
