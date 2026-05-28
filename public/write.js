@@ -918,9 +918,35 @@ var APICFG = {
         html += '</div>';
       });
       body.innerHTML = html;
+      // 追加系统级 PaddleOCR Token 配置卡片
+      api('GET','/system-config').then(function(sysCfg) {
+        var ocrVal = sysCfg.PADDLEOCR_TOKEN || '';
+        if (document.getElementById('acCard_ocr')) return;
+        var ocrCard = document.createElement('div');
+        ocrCard.className = 'ac-card';
+        ocrCard.id = 'acCard_ocr';
+        ocrCard.innerHTML = '<div class="ac-agent">🔍 PaddleOCR 字体解码 <span style="font-size:11px;color:var(--text2);">(破解反爬乱码)</span><span class="ac-saved" id="acSaved_ocr">✓ 已保存</span></div>'
+          + '<div style="font-size:11px;color:var(--text2);margin-bottom:8px;">番茄小说等平台字体反爬解码。不配置则降级为本地字形比对（精度低）。</div>'
+          + '<div class="ac-row"><label>API Key</label><input id="acKey_ocr" type="password" value="'+escHtml(ocrVal)+'" placeholder="80c6b4c894c2..."></div>'
+          + '<button class="ac-save" onclick="APICFG.saveOcr()">💾 保存</button>';
+        body.appendChild(ocrCard);
+      });
     }).catch(function(e) {
       console.error('[APICfg] 加载失败:', e);
       body.innerHTML = '<div class="sk-empty" style="color:var(--danger);">加载失败: '+e.message+'</div>';
+    });
+  },
+  saveOcr: function() {
+    var val = document.getElementById('acKey_ocr').value.trim();
+    if (!val) { toast('请输入 PaddleOCR Token', 'warn'); return; }
+    api('PUT','/system-config', { PADDLEOCR_TOKEN: val }).then(function() {
+      document.getElementById('acKey_ocr').value = '***';
+      var el = document.getElementById('acSaved_ocr');
+      if (el) { el.style.display = 'inline'; setTimeout(function(){ el.style.display = 'none'; }, 2000); }
+      toast('OCR Token 已保存');
+    }).catch(function(e) {
+      console.error('[APICfg] OCR保存失败:', e);
+      toast('保存失败: '+e.message, 'error');
     });
   },
   save: function(agentType) {
@@ -1056,7 +1082,7 @@ var DL = {
       if (kw && e.msg.toLowerCase().indexOf(kw) < 0) return;
       var cls = 'dl-line dl-'+e.level+' dl-'+e.source;
       var ts = e.ts.split('T')[1].split('.')[0]; // HH:MM:SS
-      var tag = e.source==='server'?'[S]':'[C]';
+      var tag = e.source==='server'?'[S]':e.source==='scraper'?'[P]':'[C]';
       var hlit = kw ? e.msg.replace(new RegExp('('+kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>') : e.msg;
       html += '<div class="'+cls+'"><span class="dl-ts">'+ts+'</span><span class="dl-tag">'+tag+'</span> <span class="dl-msg">'+escHtml(hlit)+'</span></div>';
     });
@@ -1088,7 +1114,7 @@ var DL = {
     if (kw && e.msg.toLowerCase().indexOf(kw) < 0) return;
     var cls = 'dl-line dl-'+e.level+' dl-'+e.source;
     var ts = e.ts.split('T')[1].split('.')[0];
-    var tag = e.source==='server'?'[S]':'[C]';
+    var tag = e.source==='server'?'[S]':e.source==='scraper'?'[P]':'[C]';
     var hlit = kw ? e.msg.replace(new RegExp('('+kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>') : e.msg;
     var div = document.createElement('div');
     div.className = cls;

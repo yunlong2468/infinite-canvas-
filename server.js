@@ -10,8 +10,8 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'infinite-canvas-local-secret-key-2024';
-const JWT_EXPIRES = '7d';
+let JWT_SECRET = process.env.JWT_SECRET || '';
+let JWT_EXPIRES = '7d';
 const PORT = process.env.PORT || 3001;
 const DB_PATH = path.join(__dirname, 'data.db');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
@@ -36,6 +36,9 @@ function queryAll(sql, params) { if (!db) return []; const s = db.prepare(sql); 
 function queryOne(sql, params) { const r = queryAll(sql, params); return r.length > 0 ? r[0] : null; }
 function dbRun(sql, params) { if (!db) return 0; db.run(sql, params); const r = queryOne('SELECT last_insert_rowid() AS id'); saveDB(); return r ? r.id : 0; }
 function saveDB() { if (!db) return; fs.writeFileSync(DB_PATH, Buffer.from(db.export())); }
+// 系统配置读写（密钥/Token集中管理，数据不入git）
+function getSysConfig(key) { var row = queryOne('SELECT value FROM system_config WHERE key=?', [key]); return row ? row.value : ''; }
+function setSysConfig(key, value) { dbRun('INSERT OR REPLACE INTO system_config (key, value) VALUES (?,?)', [key, value]); saveDB(); }
 
 // ==================== Express ====================
 const app = express();
@@ -427,17 +430,29 @@ function _fetchWithScrapling(url, platform, cdpMode, onCaptcha, onCaptchaSolved,
         var pyExe = PYTHON_EXE.replace(/"/g, '');
         var bridgePath = SCRAPER_BRIDGE.replace(/"/g, '');
         var cmdStr = '"' + pyExe + '" "' + bridgePath + '" --url "' + url + '" --platform "' + platform + '" --cdp';
-        var spawnOpts = {
-            shell: true,
-            env: Object.assign({}, process.env, { PYTHONUNBUFFERED: '1' })
-        };
-        console.log('[Crawler] CDP spawn');
+        // 注入 DB 中的 PADDLEOCR_TOKEN（优先DB，回退环境变量）
+        var childEnv = Object.assign({}, process.env, { PYTHONUNBUFFERED: '1' });
+        var dbOcrToken = getSysConfig('PADDLEOCR_TOKEN');
+        if (dbOcrToken) childEnv.PADDLEOCR_TOKEN = dbOcrToken;
+        var spawnOpts = { shell: true, env: childEnv };
+        console.log('[Crawler] CDP spawn' + (dbOcrToken ? ' [OCR:DB]' : ' [OCR:NONE]'));
         var proc = child_process.spawn(cmdStr, [], spawnOpts);
         var spawnTimer = setTimeout(function() {
             console.log('[Crawler] CDP 超时，终止进程');
             try { proc.kill(); } catch(e) {}
         }, timeout);
-        var stdoutBuf = '', lastResult = null, stderrAcc = '';
+        var stdoutBuf = '', lastResult = null;
+        // stderr：逐行实时推送到开发者日志（OCR解码进度等）
+        var _stderrLineBuf = '';
+        proc.stderr.on('data', function(data) {
+            _stderrLineBuf += data.toString();
+            var lines = _stderrLineBuf.split('\n');
+            _stderrLineBuf = lines.pop() || '';
+            for (var i = 0; i < lines.length; i++) {
+                var l = lines[i].trim();
+                if (l) broadcastDevLog('info', 'scraper', '🐍 ' + l);
+            }
+        });
         proc.stdout.on('data', function(data) {
             stdoutBuf += data.toString();
             // 逐行解析 JSON 事件
@@ -466,10 +481,10 @@ function _fetchWithScrapling(url, platform, cdpMode, onCaptcha, onCaptchaSolved,
                 }
             }
         });
-        proc.stderr.on('data', function(data) { stderrAcc += data.toString(); });
         proc.on('close', function(code) {
             clearTimeout(spawnTimer);
-            if (stderrAcc) console.log('[Crawler] stderr:', stderrAcc.substring(0, 300));
+            // 刷新残留的 stderr
+            if (_stderrLineBuf.trim()) broadcastDevLog('info', 'scraper', '🐍 ' + _stderrLineBuf.trim());
             if (lastResult) {
                 // 有结果事件
                 if (lastResult.ok && lastResult.html) {
@@ -490,9 +505,18 @@ function _fetchWithScrapling(url, platform, cdpMode, onCaptcha, onCaptchaSolved,
             callback(null, err.message);
         });
     } else {
-        // 非CDP模式用 exec
+        // 非CDP模式用 exec，注入 DB 中的 PADDLEOCR_TOKEN
+        var execEnv = Object.assign({}, process.env);
+        var execDbOcr = getSysConfig('PADDLEOCR_TOKEN');
+        if (execDbOcr) execEnv.PADDLEOCR_TOKEN = execDbOcr;
         var cmd = PYTHON_EXE + ' ' + SCRAPER_BRIDGE + ' --url "' + url + '" --platform "' + platform + '"';
-        child_process.exec(cmd, { timeout: timeout, maxBuffer: 2 * 1024 * 1024 }, function(err, stdout, stderr) {
+        child_process.exec(cmd, { timeout: timeout, maxBuffer: 2 * 1024 * 1024, env: execEnv }, function(err, stdout, stderr) {
+            // stderr 实时推送到开发者日志（OCR解码进度等）
+            if (stderr) {
+                stderr.split('\n').forEach(function(l) {
+                    if (l.trim()) broadcastDevLog('info', 'scraper', '🐍 ' + l.trim());
+                });
+            }
             if (err) { callback(null, err.message); return; }
             _parseScraplingResult(stdout, stderr, platform, url, callback);
         });
@@ -2031,18 +2055,53 @@ app.get('/api/skills/:id', auth, (req, res) => {
 
 app.get('/api/image-gen-settings', auth, (req, res) => {
     const s = queryOne('SELECT * FROM image_gen_settings WHERE user_id=?', [req.userId]);
+    if (s && s.api_key) s.api_key = '***';  // 不返回完整密钥
     res.json(s || { api_key:'', api_url:'https://api.yijiarj.cn/v1/chat/completions', model:'image2', default_size:'9:16', request_interval:3 });
 });
 
 app.put('/api/image-gen-settings', auth, (req, res) => {
     const { api_key, api_url, model, default_size, request_interval } = req.body;
-    const existing = queryOne('SELECT id FROM image_gen_settings WHERE user_id=?', [req.userId]);
+    const existing = queryOne('SELECT * FROM image_gen_settings WHERE user_id=?', [req.userId]);
+    var fields = [], params = [];
+    if (api_key !== undefined && api_key !== '***') { fields.push('api_key=?'); params.push(api_key); }
+    if (api_url !== undefined) { fields.push('api_url=?'); params.push(api_url); }
+    if (model !== undefined) { fields.push('model=?'); params.push(model); }
+    if (default_size !== undefined) { fields.push('default_size=?'); params.push(default_size); }
+    if (request_interval !== undefined) { fields.push('request_interval=?'); params.push(request_interval); }
     if (existing) {
-        dbRun('UPDATE image_gen_settings SET api_key=?, api_url=?, model=?, default_size=?, request_interval=? WHERE user_id=?',
-            [api_key||'', api_url||'', model||'image2', default_size||'9:16', request_interval||3, req.userId]);
+        if (fields.length) {
+            params.push(req.userId);
+            dbRun('UPDATE image_gen_settings SET '+fields.join(',')+' WHERE user_id=?', params);
+        }
     } else {
         dbRun('INSERT INTO image_gen_settings (user_id, api_key, api_url, model, default_size, request_interval) VALUES (?,?,?,?,?,?)',
             [req.userId, api_key||'', api_url||'', model||'image2', default_size||'9:16', request_interval||3]);
+    }
+    res.json({ ok: true });
+});
+
+// ==================== 系统配置 API（密钥管理，数据不入git） ====================
+
+app.get('/api/system-config', auth, (req, res) => {
+    var rows = queryAll('SELECT key, value FROM system_config');
+    var cfg = {};
+    rows.forEach(function(r) {
+        // 密钥类配置返回遮盖值
+        if (r.key === 'JWT_SECRET' || r.key === 'PADDLEOCR_TOKEN') {
+            cfg[r.key] = r.value ? '***' : '';
+        } else {
+            cfg[r.key] = r.value;
+        }
+    });
+    // 补充前端需要的默认字段
+    if (!cfg.PADDLEOCR_TOKEN) cfg.PADDLEOCR_TOKEN = '';
+    res.json(cfg);
+});
+
+app.put('/api/system-config', auth, (req, res) => {
+    var { PADDLEOCR_TOKEN } = req.body;
+    if (PADDLEOCR_TOKEN !== undefined && PADDLEOCR_TOKEN !== '***') {
+        setSysConfig('PADDLEOCR_TOKEN', PADDLEOCR_TOKEN);
     }
     res.json({ ok: true });
 });
@@ -2541,6 +2600,9 @@ async function start() {
     // 迁移：创建去重唯一索引（如果不存在）
     try { db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_crawler_unique ON agent_crawler_data (project_id, platform, book_name)'); } catch(e) {}
 
+    // 系统配置表（存储密钥、Token等敏感配置，不入git）
+    db.run('CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT DEFAULT \'\')');
+
 // ==================== 爬虫Agent ====================
 
 app.post('/api/writing-projects/:id/crawl-books', auth, (req, res) => {
@@ -2857,6 +2919,8 @@ app.delete('/api/writing-projects/:id/tools/:tid', auth, (req, res) => {
 app.get('/api/writing-projects/:id/agent-api-config', auth, (req, res) => {
     try {
         var configs = queryAll('SELECT * FROM writing_agent_config WHERE project_id=? ORDER BY agent_type', [req.params.id]);
+        // 遮盖 api_key，不返回完整密钥到前端
+        configs.forEach(function(c) { if (c.api_key) c.api_key = '***'; });
         res.json(configs || []);
     } catch(e) { console.error('[AgentConfig] GET error:', e); res.status(500).json({ error: e.message }); }
 });
@@ -2872,7 +2936,7 @@ app.put('/api/writing-projects/:id/agent-api-config', auth, (req, res) => {
             var sets = [];
             var params = [];
             if (api_endpoint !== undefined) { sets.push('api_endpoint=?'); params.push(api_endpoint); }
-            if (api_key !== undefined) { sets.push('api_key=?'); params.push(api_key); }
+            if (api_key !== undefined && api_key !== '***') { sets.push('api_key=?'); params.push(api_key); }
             if (model_name !== undefined) { sets.push('model_name=?'); params.push(model_name); }
             if (temperature !== undefined) { sets.push('temperature=?'); params.push(temperature); }
             if (max_tokens !== undefined) { sets.push('max_tokens=?'); params.push(max_tokens); }
@@ -2973,6 +3037,21 @@ app.put('/api/writing-projects/:id/agent-api-config', auth, (req, res) => {
 
     saveDB();
 
+    // 从 DB 加载 JWT_SECRET，保持向后兼容
+    var OLD_JWT_DEFAULT = 'infinite-canvas-local-secret-key-2024';
+    var dbSecret = queryOne('SELECT value FROM system_config WHERE key=?', ['JWT_SECRET']);
+    if (dbSecret && dbSecret.value) {
+        // DB 中已有（优先）
+        if (!JWT_SECRET) JWT_SECRET = dbSecret.value;
+        console.log('  🔐 JWT_SECRET 已从数据库加载');
+    } else if (!JWT_SECRET) {
+        // DB 中无，且环境变量也未设置 → 首次启动，用旧默认值迁移，保持已有Token有效
+        JWT_SECRET = OLD_JWT_DEFAULT;
+        dbRun('INSERT OR REPLACE INTO system_config (key, value) VALUES (?,?)', ['JWT_SECRET', JWT_SECRET]);
+        saveDB();
+        console.log('  🔐 JWT_SECRET 已迁移到数据库（兼容旧Token）');
+    }
+
     app.listen(PORT, () => {
         console.log('\n  🎨 无限画布 本地后端已启动');
         console.log('  本机访问: http://localhost:' + PORT);
@@ -2986,6 +3065,15 @@ app.put('/api/writing-projects/:id/agent-api-config', auth, (req, res) => {
                 }
             });
         });
+        console.log('');
+        // 显示字体解码模式
+        var dbOcrToken = getSysConfig('PADDLEOCR_TOKEN');
+        var ocrToken = dbOcrToken || process.env.PADDLEOCR_TOKEN || '';
+        if (ocrToken) {
+            console.log('  🔍 字体解码: PaddleOCR 模式（高精度）' + (dbOcrToken ? ' [DB]' : ' [ENV]'));
+        } else {
+            console.log('  🔍 字体解码: 本地 phash 像素比对（兜底模式）');
+        }
         console.log('');
     });
 }
