@@ -199,7 +199,17 @@ node server.js
 - [x] 撤销恢复（撤回对话同步回滚章/卷/角色）
 - [x] LLM 多轮工具调用 + 子智能体 request_tool 递归
 - [x] 开发者日志面板（前后端console拦截+SSE实时推送+等级过滤+关键字搜索+面板拖拽调整高度）
-- [x] 双气泡去重（流式缓冲残留检测 + DB内存双重去重 + callOutlineLLM skipDbSave 源头防重复）
+- [x] 双气泡去重（流式缓冲残留检测 + DB/内存双重去重 + skipDbSave 源头防重复）
+- [x] 引导问卷（4题写作背景→LLM分析→方案匹配A1/A2/B1→问候语注入+果冻收缩动画）
+- [x] 多选按钮（非平台选项多选+自定义输入必填校验+手动提交）
+- [x] 上下文圆环（SVG逆时针填充+三色阈值+Token精确估算+点击触发压缩）
+- [x] 故事蓝图（📋子标签+5卡片折叠+版本历史回退+问卷种子自动注入）
+- [x] RAG上下文管理（HNSW向量索引+混合检索RRF融合+自动分块+Embedding缓存+BM25降级）
+- [x] 压缩层（增量/存量/全量三层模型+LLM摘要生成+异步队列）
+- [x] 组装层（蓝图+RAG+项目摘要注入系统提示词+三模式上下文拼接）
+- [x] 检查点系统（对话流只读卡片+提交按钮联动+增量更新蓝图）
+- [x] Token统计精准化（实际费用=定价×token数×折扣+缓存token追踪+stream_options usage提取）
+- [x] SSE reload-chat（爬虫完成后自动刷新聊天界面）
 
 ### 爬虫架构（三级降级）
 
@@ -218,11 +228,19 @@ node server.js
 
 | 功能 | 说明 | 状态 |
 |------|------|------|
+| 引导问卷 | 4题写作背景→LLM方案匹配→问候语注入 | ✅ |
+| 故事蓝图 | 5卡片折叠+版本历史+种子注入 | ✅ |
+| RAG上下文管理 | HNSW索引+混合检索+自动分块 | ✅ |
+| 上下文压缩 | 增量/存量/全量三层模型 | ✅ |
+| 检查点系统 | 对话流卡片+提交联动+增量更新 | ✅ |
+| 上下文圆环 | SVG逆时针+三色阈值+Token估算 | ✅ |
+| 多选按钮 | 非平台多选+自定义输入校验 | ✅ |
 | 撤销/重做 | Ctrl+Z / Ctrl+Y 画布操作历史 | ✅ |
+| 键盘快捷键 | Ctrl+C/X/V/Z 剪贴板+撤销 | ✅ |
 | 图片裁剪 | 节点内裁剪工具，固定比例裁切 | ⬜ |
 | 节点编组 | 多节点合并为组，统一移动/复制 | ⬜ |
-| 键盘快捷键 | Ctrl+C/X/V/Z 剪贴板+撤销 | ✅ |
 | 项目模板 | 预设画布模板快速创建 | ⬜ |
+| 批量生图 | 帧节点一键生成所有关键帧图片 | ⬜ |
 
 ### 📅 中期（v1.3）
 
@@ -252,7 +270,8 @@ node server.js
 
 ```
 新-无限画布本地部署/
-├── server.js              # Express 后端 (~6000行)
+├── server.js              # Express 后端 (~6500行)
+├── hnsw_index.js          # 轻量HNSW向量索引（内存+SQL.js持久化）
 ├── package.json           # Node.js 依赖声明
 ├── requirements.txt       # Python 依赖声明（Scrapling爬虫）
 ├── setup.bat              # Windows 一键环境安装脚本
@@ -286,6 +305,9 @@ node server.js
 | `JWT_SECRET` | DB system_config 表 | JWT 签名密钥（首次启动自动生成） |
 | `PADDLEOCR_TOKEN` | DB system_config 表 | PaddleOCR 高精度字体解码（可选） |
 | LLM API Key | DB agents 表 | 智能体管理页面配置，支持多模型 |
+| Token 定价 | DB token_pricing_config 表 | 按模型分别配置输入/输出/缓存每百万token价格+折扣 |
+| 检索模型 | DB writing_agent_config 表 | retrieval_model/endpoint/api_key 独立配置 |
+| 用户设置 | DB user_settings 表 | key-value 结构，onboarding_completed/dev_mode 等 |
 
 > 密钥已从硬编码/环境变量迁移至数据库，支持动态管理和 API Key 遮盖显示（`***`）。
 
