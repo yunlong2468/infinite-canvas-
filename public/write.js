@@ -642,14 +642,23 @@ var RENDER = {
       + '<div class="ch-header">'
       + '<span class="ch-tab active" onclick="switchChatSubTab(\'chat\')" id="tabSubChat">💬 聊天</span>'
       + '<span class="ch-tab" onclick="switchChatSubTab(\'chars\')" id="tabSubChars">👥 角色</span>'
+      + '<span class="ch-tab" onclick="switchChatSubTab(\'blueprint\')" id="tabSubBlueprint">📋 蓝图</span>'
       + '<span style="flex:1;"></span>'
       + '<span style="font-size:11px;color:var(--text2);" id="onlineAgents">1人</span>'
       + '</div>'
       + '<div id="subPanelChat" class="ch-msgs"><div class="ap-loading">加载历史对话中...</div></div>'
       + '<div id="subPanelChars" class="ch-msgs" style="display:none;"><div id="charList"></div></div>'
+      + '<div id="subPanelBlueprint" class="ch-msgs" style="display:none;"><div id="blueprintContent" class="bp-content"><div class="ap-loading">加载故事蓝图中...</div></div></div>'
       + '<div class="ch-input" id="chatInputArea">'
       + '<div class="unread-badge" id="unreadBadge" onclick="scrollToUnread()"></div>'
       + '<div class="mention-dropdown" id="mentionDropdown"></div>'
+      + '<div class="ctx-ring-wrap" id="ctxRingWrap" style="display:none;">'
+      + '<svg width="24" height="24" viewBox="0 0 24 24" class="ctx-ring-svg">'
+      + '<circle cx="12" cy="12" r="10" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="2.5"/>'
+      + '<circle cx="12" cy="12" r="10" fill="none" stroke="#22C55E" stroke-width="2.5" stroke-linecap="round"'
+      + ' stroke-dasharray="62.8319" stroke-dashoffset="62.8319" transform="rotate(-90 12 12) scale(1,-1) translate(0,-24)" id="ctxRingArc"/>'
+      + '</svg><div class="ctx-ring-tip" id="ctxRingTip"></div></div>'
+      + '<button id="btnCheckpointCommit" style="display:none;background:rgba(245,166,35,0.15)!important;color:#F5A623!important;border:0.5px solid rgba(245,166,35,0.3)!important;font-size:11px;" onclick="commitCheckpoint()">✓ 确认检查点</button>'
       + '<textarea id="agentInput" rows="1" placeholder="输入消息或 @Agent..." onkeydown="handleInputKey(event)" oninput="handleMentionInput();autoGrowInput()"></textarea>'
       + '<button id="btnSend" onclick="sendAgentMessage()">发送</button>'
       + '<button id="btnStop" onclick="stopAgentCall()" style="display:none;background:rgba(245,63,63,0.15)!important;color:#F53F3F!important;border:0.5px solid rgba(245,63,63,0.3)!important;">⏹ 停止</button>'
@@ -658,6 +667,8 @@ var RENDER = {
       + '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);"><span>💰 Token</span><span id="tokenToday">加载中</span></div>'
       + '<div class="tok-detail"><div id="tokenChart" style="font-size:10px;color:var(--text2);"></div><div style="font-size:10px;color:var(--text2);" id="tokenCost"></div></div>'
       + '</div></div>';
+    // 绑定问卷事件（此时DOM已渲染完毕）
+    OB.init();
     // 渲染现有消息
     if (agentMsgs.length) renderAgentMessages();
     else { var c=document.getElementById('subPanelChat'); if(c)c.innerHTML='<div class="ap-loading">暂无对话记录<br><span style="font-size:11px;color:var(--text2);">在下方输入消息开始创作</span></div>'; }
@@ -769,10 +780,13 @@ function openChapter(chapterId) {
 function switchChatSubTab(tab) {
   document.getElementById('tabSubChat').classList.toggle('active', tab==='chat');
   document.getElementById('tabSubChars').classList.toggle('active', tab==='chars');
+  document.getElementById('tabSubBlueprint').classList.toggle('active', tab==='blueprint');
   document.getElementById('subPanelChat').style.display = tab==='chat' ? '' : 'none';
   document.getElementById('subPanelChars').style.display = tab==='chars' ? '' : 'none';
+  document.getElementById('subPanelBlueprint').style.display = tab==='blueprint' ? '' : 'none';
   document.getElementById('chatInputArea').style.display = tab==='chat' ? '' : 'none';
   if (tab==='chars') loadCharacters();
+  if (tab==='blueprint') BLUEPRINT.render();
 }
 
 // ===== Skill Config =====
@@ -1238,6 +1252,10 @@ function showSettings() {
   document.body.appendChild(ov);
   document.getElementById('devToggle').addEventListener('click', function() {
     DEV_MODE.enabled = !DEV_MODE.enabled;
+    // 同步到DB，确保跨设备一致
+    api('POST','/user/settings', { key:'dev_mode', value:DEV_MODE.enabled?'1':'0' }).catch(function(){});
+    if (DEV_MODE.enabled) document.getElementById('obRetakeBtn').style.display = 'block';
+    else document.getElementById('obRetakeBtn').style.display = 'none';
     ov.remove();
     showSettings();
   });
@@ -1394,16 +1412,43 @@ function parseOptBtns(rawText, agentType, pickedOption) {
   }
   var html = formatAgentContent(kept.join('\n'));
   if (!btns.length) return {html:html, btns:''};
-  var btnHtml = '<div class="opt-btns">';
-  btns.forEach(function(t) {
-    var cls = 'opt-btn';
-    if (pickedOption) {
-      cls += (t === pickedOption) ? ' picked' : ' gone';
-    }
-    btnHtml += '<button class="'+cls+'" data-opt="'+escHtml(t)+'" onclick="event.stopPropagation();clickOption(this)">'+escHtml(t)+'</button>';
-  });
-  btnHtml += '</div>';
-  return {html:html, btns:btnHtml};
+  // 检测是否为平台选择：仅在选项值为具体平台名时触发单选（检测最近一行的上下文）
+  var ctxLines = rawText.split('\n');
+  var contextLine = '';
+  for (var cl = ctxLines.length - 1; cl >= 0; cl--) {
+    if (ctxLines[cl].match(/^\s*-\s*\[/)) continue; // 跳过选项行
+    contextLine = ctxLines[cl]; break;
+  }
+  var isPlatform = /哪个平台|爬哪个平台|选择平台|的平台/i.test(contextLine) && btns.some(function(b) { return /番茄|起点|飞卢|晋江|纵横|17K|掌阅/i.test(b); });
+  var isMulti = !isPlatform;
+  if (isMulti) {
+    // 多选模式：复选框 + 手动提交按钮
+    var btnHtml = '<div class="opt-btns opt-multi" data-opt-type="multi">';
+    btns.forEach(function(t, idx) {
+      var needCustom = /我有其他|我来补充|其他看法|我有想法|自定义|其他$/i.test(t);
+      var checked = (pickedOption && pickedOption.indexOf(t) >= 0) ? ' checked' : '';
+      btnHtml += '<label class="opt-cb">';
+      btnHtml += '<input type="checkbox" data-opt="'+escHtml(t)+'"'+checked+(needCustom?' data-need-input="1"':'')+' onclick="event.stopPropagation();clickMultiOpt(this)">';
+      btnHtml += '<span>'+escHtml(t)+'</span>';
+      if (needCustom) btnHtml += '<input class="opt-custom-inp" placeholder="请输入具体内容..." style="display:none;" onclick="event.stopPropagation();event.stopImmediatePropagation();">';
+      btnHtml += '</label>';
+    });
+    btnHtml += '<button class="opt-submit-btn" onclick="event.stopPropagation();clickMultiSubmit(this)" disabled>确认提交</button>';
+    btnHtml += '</div>';
+    return {html:html, btns:btnHtml};
+  } else {
+    // 平台单选模式（保持原有行为）
+    var btnHtml = '<div class="opt-btns" data-opt-type="single">';
+    btns.forEach(function(t) {
+      var cls = 'opt-btn';
+      if (pickedOption) {
+        cls += (t === pickedOption) ? ' picked' : ' gone';
+      }
+      btnHtml += '<button class="'+cls+'" data-opt="'+escHtml(t)+'" onclick="event.stopPropagation();clickOption(this)">'+escHtml(t)+'</button>';
+    });
+    btnHtml += '</div>';
+    return {html:html, btns:btnHtml};
+  }
 }
 
 // ===== 选项按钮持久化 =====
@@ -1446,6 +1491,86 @@ function clickOption(btn) {
   });
   var inp = document.getElementById('agentInput');
   if (inp) { inp.value = text; sendAgentMessage(); }
+}
+
+// 多选模式：勾选/取消 复选框
+function clickMultiOpt(cb) {
+  var needInput = cb.getAttribute('data-need-input') === '1';
+  var customInp = cb.parentElement.querySelector('.opt-custom-inp');
+  if (cb.checked) {
+    if (needInput && customInp) {
+      customInp.style.display = 'inline-block';
+      customInp.focus();
+    }
+  } else {
+    if (customInp) { customInp.style.display = 'none'; customInp.value = ''; }
+  }
+  // 更新提交按钮状态
+  var container = cb.closest('.opt-multi');
+  if (container) {
+    var anyChecked = container.querySelectorAll('input[type="checkbox"]:checked').length > 0;
+    var submitBtn = container.querySelector('.opt-submit-btn');
+    if (submitBtn) submitBtn.disabled = !anyChecked;
+  }
+}
+
+// 自定义输入框变化时更新提交按钮
+document.addEventListener('input', function(e) {
+  if (e.target.classList.contains('opt-custom-inp')) {
+    var container = e.target.closest('.opt-multi');
+    if (container) {
+      var submitBtn = container.querySelector('.opt-submit-btn');
+      if (submitBtn) {
+        var checkedCbs = container.querySelectorAll('input[type="checkbox"]:checked');
+        var allFilled = true;
+        checkedCbs.forEach(function(cb) {
+          if (cb.getAttribute('data-need-input') === '1') {
+            var inp = cb.parentElement.querySelector('.opt-custom-inp');
+            if (!inp || !inp.value.trim()) allFilled = false;
+          }
+        });
+        submitBtn.disabled = !allFilled || checkedCbs.length === 0;
+      }
+    }
+  }
+});
+
+// 多选模式：收集选项并发送
+function clickMultiSubmit(btn) {
+  var container = btn.closest('.opt-multi');
+  if (!container) return;
+  var checkedCbs = container.querySelectorAll('input[type="checkbox"]:checked');
+  var parts = [];
+  var allFilled = true;
+  checkedCbs.forEach(function(cb) {
+    var optText = cb.getAttribute('data-opt');
+    var needInput = cb.getAttribute('data-need-input') === '1';
+    if (needInput) {
+      var inp = cb.parentElement.querySelector('.opt-custom-inp');
+      if (inp && inp.value.trim()) {
+        parts.push(optText + '：' + inp.value.trim());
+      } else {
+        allFilled = false;
+        toast('请填写"'+optText+'"的具体内容', 'warn');
+      }
+    } else {
+      parts.push(optText);
+    }
+  });
+  if (!allFilled || parts.length === 0) return;
+  // 禁用按钮防重复提交
+  btn.disabled = true;
+  var msgEl = btn.closest('.msg');
+  if (msgEl) {
+    var mi = parseInt(msgEl.getAttribute('data-msg-idx'));
+    if (!isNaN(mi) && agentMsgs[mi]) {
+      agentMsgs[mi].pickedOption = parts.join('; ');
+      savePickedOption(agentMsgs[mi].content, parts.join('; '));
+    }
+  }
+  // 发送组合消息
+  var inp = document.getElementById('agentInput');
+  if (inp) { inp.value = parts.join('，'); sendAgentMessage(); }
 }
 
 function renderSingleMsg(m) {
@@ -1532,6 +1657,27 @@ function renderAgentMessages() {
       else { html+='<div class="msg system-msg"><span class="sys-text">你撤回了一条消息，<a class="undo-notice-link" style="color:var(--accent);text-decoration:underline;cursor:pointer;" onclick="event.stopPropagation();retriggerUndoneText()">重新编辑</a></span></div>'; }
     }
     else if(m.type==='system')html+='<div class="msg system-msg"><span class="sys-text">'+escHtml(replaceAgentPlaceholders(m.content))+'</span></div>';
+    else if(m.type==='checkpoint'){
+      // 检查点卡片：只读展示 + 提交按钮联动
+      var cpMeta = {};
+      try { cpMeta = JSON.parse(m._rawMeta || '{}'); } catch(e) {}
+      var cpFields = cpMeta.data || {};
+      var cpCommitted = cpMeta.committed;
+      var cpType = cpMeta.checkpoint_type || 'character';
+      var cpIcons = { character: '👤', worldbuilding: '🌍', conflict: '⚔️', foreshadowing: '🔮' };
+      html += '<div class="msg cp-card'+(cpCommitted?' cp-locked':'')+'" data-msg-idx="'+i+'" data-cp-type="'+cpType+'" data-cp-committed="'+(cpCommitted?'1':'0')+'">';
+      html += '<div class="cp-hdr"><span>'+escHtml(cpIcons[cpType]||'📋')+' '+escHtml(m.content||'检查点')+'</span>';
+      html += cpCommitted ? '<span class="cp-badge">✓ 已确认</span>' : '';
+      html += '</div><div class="cp-body">';
+      Object.keys(cpFields).forEach(function(k) {
+        html += '<div class="cp-row"><span class="cp-label">'+escHtml(k)+'</span><span class="cp-val">'+escHtml(String(cpFields[k]||''))+'</span></div>';
+      });
+      html += '</div></div>';
+      // 如果有未提交的检查点，显示提交按钮
+      if (!cpCommitted) {
+        _pendingCheckpoint = { msgIdx: i, cpType: cpType, cpData: cpFields, msgId: m._dbId };
+      }
+    }
     else if(m.role==='user'){
       html+='<div class="msg user-msg" data-msg-idx="'+i+'"><div class="avatar" style="background:rgba(5,163,197,0.12);">👤</div><div class="bubble" onmousedown="if(event.button===2){event.preventDefault();event.stopPropagation()}" oncontextmenu="event.preventDefault();showUserCtxMenu(event,'+i+')">'+escHtml(m.content)+t+'</div></div>';
     }
@@ -1563,6 +1709,10 @@ function renderAgentMessages() {
   container.innerHTML='<div class="msg-inner">'+html+'</div>';
   // innerHTML替换后旧_toolStreamEl引用已脱离DOM，必须置空防止后续误操作
   if (_toolStreamEl) { console.log('[去重·Render] innerHTML已替换，置空悬空的_toolStreamEl (was agent='+_toolStreamAgent+')'); _toolStreamEl = null; _toolStreamAgent = null; }
+  // 检查点提交按钮联动
+  var cpBtn = document.getElementById('btnCheckpointCommit');
+  if (cpBtn) { cpBtn.style.display = _pendingCheckpoint ? '' : 'none'; cpBtn.disabled = !_pendingCheckpoint; }
+  CTX_RING.update();
   console.log('[Render] innerHTML已设置 DOM消息数='+container.querySelectorAll('.msg').length+' html长度='+html.length);
   // 检查可见性：offsetHeight/Width + 父元素链
   var rect=container.getBoundingClientRect();
@@ -2219,6 +2369,26 @@ function retriggerAgent(text) {
   markAllRead();
   createStreamingBubble('orchestrator');
   doStreamingCall(text);
+}
+
+// 提交检查点 → 锁定卡片 + 增量更新蓝图
+function commitCheckpoint() {
+  if (!_pendingCheckpoint) return;
+  var cp = _pendingCheckpoint;
+  var btn = document.getElementById('btnCheckpointCommit');
+  if (btn) btn.disabled = true;
+  api('POST', '/writing-projects/'+projectId+'/checkpoint/'+cp.msgId+'/commit').then(function(r) {
+    if (r && r.ok) {
+      toast('检查点已确认 ✓', 'info');
+      // 锁定卡片UI
+      var cards = document.querySelectorAll('.cp-card:not(.cp-locked)');
+      cards.forEach(function(c) { c.classList.add('cp-locked'); });
+      _pendingCheckpoint = null;
+      if (btn) btn.style.display = 'none';
+      // 刷新蓝图
+      setTimeout(function() { BLUEPRINT.load(); }, 500);
+    }
+  }).catch(function() { toast('提交失败', 'error'); if (btn) btn.disabled = false; });
 }
 
 function sendAgentMessage() {
@@ -2888,10 +3058,12 @@ function _stopPhraseRotation() {
 // 子智能体流式气泡辅助函数
 function _ensureToolBubble(agentType) {
   if (_toolStreamEl && _toolStreamAgent === agentType) return;
-  // 去重1：检查agentMsgs内存数组（比DOM查询更可靠，不受innerHTML替换影响）
-  for (var _mi = agentMsgs.length - 1; _mi >= 0; _mi--) {
-    if (agentMsgs[_mi].agent === agentType && agentMsgs[_mi].type === 'tool_result') {
-      _toolStreamAgent = agentType; console.log('[去重·Bubble] agentMsgs已有 '+agentType+' 的tool_result，跳过创建流式气泡'); return;
+  // 去重1：仅在非流式活跃时检查agentMsgs（流式期间数据是新产生的，不应跳过气泡创建）
+  if (!_bufActive) {
+    for (var _mi = agentMsgs.length - 1; _mi >= 0; _mi--) {
+      if (agentMsgs[_mi].agent === agentType && agentMsgs[_mi].type === 'tool_result') {
+        _toolStreamAgent = agentType; console.log('[去重·Bubble] agentMsgs已有 '+agentType+' 的tool_result（非流式），跳过'); return;
+      }
     }
   }
   // 去重2：检查DOM中是否已有该智能体的非流式气泡（由 renderAgentMessages 从DB渲染）
@@ -2986,7 +3158,7 @@ function simpleRetryReload(originalCount, attempts) {
         try { meta = JSON.parse(m.metadata || '{}'); } catch(e) {}
         var createdTs = m.created_at ? Date.parse(m.created_at) : NaN;
         var msgTime = isNaN(createdTs) ? Date.now() : createdTs;
-        var msg = { type: meta.type, time: msgTime, role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '' };
+        var msg = { type: meta.type, time: msgTime, role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '', _rawMeta: m.metadata, _dbId: m.id };
         if (m.agent_type === 'orchestrator' && savedOpts[m.content]) msg.pickedOption = savedOpts[m.content];
         agentMsgs.push(msg);
       });
@@ -3029,7 +3201,7 @@ function reloadHistoryFromDB() { console.log("[Reload] 从DB加载历史...");
         try { meta = JSON.parse(m.metadata || '{}'); } catch(e) {}
         var createdTs = m.created_at ? Date.parse(m.created_at) : NaN;
         var msgTime = isNaN(createdTs) ? Date.now() : createdTs;
-        var msg = { type: meta.type, time: msgTime, role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '' };
+        var msg = { type: meta.type, time: msgTime, role: m.role, agent: m.agent_type, content: m.content, thinking: m.thinking || '', _rawMeta: m.metadata, _dbId: m.id };
         console.log("[Reload] msg["+i+"] role="+m.role+" agent="+m.agent_type+" type="+meta.type+" content前50字="+(m.content||'').substring(0,50));
         if (m.agent_type === 'orchestrator' && savedOpts[m.content]) msg.pickedOption = savedOpts[m.content];
         agentMsgs.push(msg);
@@ -3041,19 +3213,392 @@ function reloadHistoryFromDB() { console.log("[Reload] 从DB加载历史...");
   }).catch(function(e) { console.error("[Reload] API失败:", e); });
 }
 
+// ===== 故事蓝图面板 =====
+var BLUEPRINT = {
+  data: null,
+  _loaded: false,
+
+  load: function() {
+    var self = this;
+    api('GET', '/writing-projects/'+projectId+'/blueprint').then(function(r) {
+      var bp = (r && r.blueprint) ? r.blueprint : null;
+      // 仅当API返回非空蓝图时才覆盖（保留OB种子数据）
+      if (bp && (bp.core.premise || bp.core.genre || bp.protagonist.name || bp.world.power_system)) {
+        self.data = bp;
+      } else if (!self.data) {
+        self.data = _emptyBlueprintClient();
+      }
+      self._loaded = true;
+      console.log('[Blueprint] 已加载 版本='+(r&&r.version)+' premise='+((self.data.core||{}).premise||'空'));
+    }).catch(function() {
+      if (!self.data) self.data = _emptyBlueprintClient();
+      self._loaded = true;
+    });
+  },
+
+  render: function() {
+    var container = document.getElementById('blueprintContent');
+    if (!container) return;
+    if (!this._loaded) { container.innerHTML = '<div class="ap-loading">加载故事蓝图中...</div>'; this.load(); return; }
+    _bpSectionCounter = 0;
+    if (!this.data) { this.data = _emptyBlueprintClient(); }
+    var bp = this.data;
+    var html = '';
+    // 核心设定
+    html += _bpSection('🎯 核心设定', [
+      { label: '一句话梗概', value: bp.core.premise },
+      { label: '题材', value: bp.core.genre },
+      { label: '风格基调', value: bp.core.tone },
+      { label: '目标平台', value: bp.core.target_platform },
+      { label: '目标读者', value: bp.core.target_audience }
+    ]);
+    // 主角
+    html += _bpSection('👤 主角', [
+      { label: '姓名', value: bp.protagonist.name },
+      { label: '故事弧线', value: bp.protagonist.arc_summary },
+      { label: '当前阶段', value: bp.protagonist.current_stage },
+      { label: '核心特质', value: (bp.protagonist.key_traits||[]).join('、') },
+      { label: '核心冲突', value: bp.protagonist.core_conflict }
+    ]);
+    // 世界观
+    html += _bpSection('🌍 世界观', [
+      { label: '力量体系', value: bp.world.power_system },
+      { label: '时代概要', value: bp.world.era_summary },
+      { label: '主要势力', value: (bp.world.key_factions||[]).join('、') },
+      { label: '待解决问题', value: (bp.world.pending_questions||[]).join('；') }
+    ]);
+    // 情节
+    html += _bpSection('📖 情节', [
+      { label: '主线', value: bp.plot.main_thread },
+      { label: '支线', value: (bp.plot.sub_threads||[]).map(function(s){ return s.name+' ('+(s.status||'')+')'; }).join('<br>') },
+      { label: '伏笔', value: (bp.plot.foreshadowing||[]).map(function(f){ return f.name+' ['+(f.status||'')+']'; }).join('<br>') }
+    ]);
+    // 进度
+    html += _bpSection('📊 进度', [
+      { label: '当前卷/章', value: '第'+bp.outline_progress.current_volume+'卷 第'+bp.outline_progress.current_chapter+'章' },
+      { label: '已写章节', value: bp.outline_progress.chapters_written+'章' },
+      { label: '下章钩子', value: bp.outline_progress.next_chapter_hook }
+    ]);
+    // 版本历史入口
+    html += '<div class="bp-version-bar" onclick="BLUEPRINT.showHistory()">📜 版本历史</div>';
+    container.innerHTML = html;
+  },
+
+  save: function() {
+    if (!this.data) return;
+    api('POST', '/writing-projects/'+projectId+'/blueprint', { blueprint: this.data }).then(function(r) {
+      console.log('[Blueprint] 已保存 版本='+(r&&r.version));
+    }).catch(function(e) { console.error('[Blueprint] 保存失败:', e); });
+  },
+
+  showHistory: function() {
+    var self = this;
+    api('GET', '/writing-projects/'+projectId+'/blueprint/history').then(function(history) {
+      var container = document.getElementById('blueprintContent');
+      if (!container) return;
+      if (!history || !history.length) { toast('暂无版本历史', 'warn'); return; }
+      var html = '<div style="font-size:13px;color:#fff;margin-bottom:8px;">📜 版本历史</div>';
+      html += '<div class="bp-version-list">';
+      history.forEach(function(v, i) {
+        html += '<div class="bp-version-row">';
+        html += '<div><span class="bp-ver-num">v'+v.version+'</span>';
+        html += '<span class="bp-ver-summary">'+escHtml(v.compression_summary||'无摘要')+'</span></div>';
+        html += '<div style="display:flex;align-items:center;gap:8px;">';
+        html += '<span class="bp-ver-time">'+(v.created_at||'').substring(0,16)+'</span>';
+        if (i > 0) html += '<button class="bp-ver-rollback" onclick="BLUEPRINT.rollback('+v.version+')">回退</button>';
+        else html += '<span class="bp-ver-current">当前</span>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+      html += '<div class="bp-version-bar" onclick="BLUEPRINT.render()">← 返回蓝图</div>';
+      container.innerHTML = html;
+    });
+  },
+
+  rollback: function(version) {
+    var self = this;
+    showConfirm('确定回退到 v'+version+'？', function(ok) {
+      if (!ok) return;
+      api('POST', '/writing-projects/'+projectId+'/blueprint/rollback', { version: version }).then(function(r) {
+        toast('已回退到 v'+version);
+        self.load();
+        setTimeout(function() { self.render(); }, 600);
+      });
+    });
+  }
+};
+
+var _bpSectionCounter = 0;
+function _bpSection(title, fields) {
+  var id = 'bps_' + (++_bpSectionCounter);
+  var html = '<div class="bp-card"><div class="bp-card-hdr" onclick="var b=document.getElementById(\''+id+'\');b.style.display=b.style.display==\'none\'?\'\':\'none\'">'+title+'</div>';
+  html += '<div class="bp-card-body" id="'+id+'">';
+  var hasContent = false;
+  fields.forEach(function(f) {
+    var v = (f.value || '').trim();
+    if (!v) return;
+    hasContent = true;
+    html += '<div class="bp-row"><span class="bp-label">'+f.label+'</span><span class="bp-val">'+escHtml(v)+'</span></div>';
+  });
+  if (!hasContent) html += '<div class="bp-empty">暂无设定</div>';
+  html += '</div></div>';
+  return html;
+}
+
+function _emptyBlueprintClient() {
+  return {
+    core: { premise: '', genre: '', tone: '', target_platform: '', target_audience: '' },
+    protagonist: { name: '', arc_summary: '', current_stage: '', key_traits: [], core_conflict: '' },
+    world: { power_system: '', era_summary: '', key_factions: [], pending_questions: [] },
+    plot: { main_thread: '', sub_threads: [], foreshadowing: [] },
+    outline_progress: { current_volume: 1, current_chapter: 1, chapters_written: 0, next_chapter_hook: '' }
+  };
+}
+
+// ===== 上下文占用圆环控件 =====
+var CTX_RING = {
+  _pct: 0,
+  _modelLimit: 1000000,  // 默认DeepSeek V4 1M上下文（后续从模型配置读取）
+
+  show: function() {
+    document.getElementById('ctxRingWrap').style.display = 'flex';
+  },
+
+  update: function() {
+    var total = _estimateContextTokens();
+    var pct = Math.min(100, Math.round(total / this._modelLimit * 100));
+    this._pct = pct;
+    var arc = document.getElementById('ctxRingArc');
+    if (!arc) return;
+    var len = 62.8319; // 2*π*10
+    var offset = len * (1 - pct / 100);
+    arc.setAttribute('stroke-dashoffset', offset);
+    // 颜色切换
+    var color = pct < 45 ? '#22C55E' : pct < 60 ? '#F59E0B' : '#EF4444';
+    arc.setAttribute('stroke', color);
+    var tip = document.getElementById('ctxRingTip');
+    if (tip) tip.textContent = '上下文 ' + pct + '%';
+    // 有消息后显示圆环（初始隐藏，避免空白项目一直显示0%圆环）
+    if (pct > 0) this.show();
+  }
+};
+
+// 点击圆环 → 发送压缩请求（阶段七已实现）
+document.addEventListener('click', function(e) {
+  if (e.target.closest('#ctxRingWrap') && CTX_RING._pct >= 45) {
+    api('POST', '/writing-projects/'+projectId+'/compress').then(function(r) {
+      if (r && r.ok) { toast('上下文已压缩 ✓', 'info'); CTX_RING.update(); BLUEPRINT.load(); }
+      else toast('压缩失败，请稍后重试', 'error');
+    }).catch(function() { toast('压缩请求失败', 'error'); });
+  }
+});
+
+// Token估算：中文字数×2.5 + 蓝图 + 系统提示词固定开销
+function _estimateContextTokens() {
+  var tokens = 3000; // 系统提示词
+  tokens += JSON.stringify(_storySeed || {}).length * 1.2; // 故事蓝图
+  // 对话历史
+  agentMsgs.forEach(function(m) {
+    tokens += (m.content || '').length * 2.5;
+    tokens += (m.thinking || '').length * 2.5;
+  });
+  return Math.round(tokens);
+}
+
 function stopBufferPolling() {
   _bufStopped = true;
   if (_bufPollTimer) { clearTimeout(_bufPollTimer); _bufPollTimer = null; }
 }
 
+// ==================== 引导问卷（OB对象） ====================
+var OB = {
+  answers: {},        // 收集的答案 {experience, duration, platform, status}
+  currentStep: 1,
+  _submitted: false,
+
+  init: function() {
+    var self = this;
+    // 每次DOM重建后重新绑定事件（RENDER.chat可能多次调用）
+    var skipBtn = document.getElementById('obSkip');
+    if (skipBtn) skipBtn.onclick = function() { self.skip(); };
+    var submitBtn = document.getElementById('obSubmit');
+    if (submitBtn) submitBtn.onclick = function() { self.submit(); };
+    // 绑定选项点击事件
+    var opts = document.querySelectorAll('.ob-opt');
+    opts.forEach(function(opt) {
+      opt.onclick = function() {
+        var stepEl = this.closest('.ob-step');
+        if (!stepEl) return;
+        var key = stepEl.querySelector('.ob-options').dataset.key;
+        var val = this.dataset.val;
+        stepEl.querySelectorAll('.ob-opt').forEach(function(o) { o.classList.remove('selected'); });
+        this.classList.add('selected');
+        self.answers[key] = val;
+        if (stepEl.dataset.step === '4') {
+          var sb = document.getElementById('obSubmit');
+          if (sb) sb.disabled = false;
+        }
+        if (parseInt(stepEl.dataset.step) < 4) {
+          setTimeout(function() { self.next(); }, 300);
+        }
+      };
+    });
+    // 如果之前被延迟的show还在等待，立即执行
+    if (this._pendingShow) { this._pendingShow = false; this.show(); }
+  },
+
+  show: function() {
+    var overlay = document.getElementById('onboardingOverlay');
+    if (!overlay) { console.log('[OB] overlay未渲染，等待RENDER.chat后显示'); this._pendingShow = true; return; }
+    overlay.style.display = 'flex';
+    this.currentStep = 1;
+    this.answers = {};
+    this._showStep(1);
+    document.getElementById('obSubmit').disabled = true;
+  },
+
+  _showStep: function(n) {
+    var steps = document.querySelectorAll('.ob-step');
+    steps.forEach(function(s) { s.classList.remove('active'); });
+    var target = document.querySelector('.ob-step[data-step="'+n+'"]');
+    if (target) target.classList.add('active');
+    this.currentStep = n;
+  },
+
+  next: function() {
+    if (this.currentStep < 4) this._showStep(this.currentStep + 1);
+  },
+
+  prev: function() {
+    if (this.currentStep > 1) this._showStep(this.currentStep - 1);
+  },
+
+  skip: function() {
+    // 跳过问卷，使用默认方案
+    this._submitted = true;
+    api('POST', '/writing/onboarding/analyze', { experience:'some', duration:'1_3_years', platform:'any', status:'blank' }).then(function(r) {
+      if (r && r.opening_message) OB._finish(r);
+    }).catch(function() {
+      OB._finish({ approach:'A2_then_B1', opening_message:'你好！我是你的创作搭档，有什么想法尽管聊~', story_seed:{genre_hint:'', tone_hint:'', initial_conflict:'', platform_advice:''} });
+    });
+  },
+
+  submit: function() {
+    if (Object.keys(this.answers).length < 4) return;
+    if (this._submitted) return;
+    this._submitted = true;
+    // 显示加载态
+    document.querySelectorAll('.ob-step').forEach(function(s) { s.style.display = 'none'; });
+    document.getElementById('obSkip').style.display = 'none';
+    document.getElementById('obLoading').style.display = 'block';
+
+    var self = this;
+    api('POST', '/writing/onboarding/analyze', this.answers).then(function(r) {
+      if (r && r.opening_message) self._finish(r);
+      else self._finish({ approach:'A2_then_B1', opening_message:'你好！说说你的故事想法吧~', story_seed:{genre_hint:'', tone_hint:'', initial_conflict:'', platform_advice:''} });
+    }).catch(function() {
+      self._finish({ approach:'A2_then_B1', opening_message:'你好！我是你的创作搭档，有什么想法尽管聊~', story_seed:{genre_hint:'', tone_hint:'', initial_conflict:'', platform_advice:''} });
+    });
+  },
+
+  _finish: function(result) {
+    var self = this;
+    // 保存方案配置
+    _currentApproach = result.approach || 'A2_then_B1';
+    _storySeed = result.story_seed || {};
+    // 初始蓝图种子注入（从问卷结果推断的初始设定）
+    if (_storySeed.genre_hint || _storySeed.tone_hint || _storySeed.initial_conflict) {
+      if (!BLUEPRINT.data) BLUEPRINT.data = _emptyBlueprintClient();
+      if (_storySeed.genre_hint) BLUEPRINT.data.core.genre = _storySeed.genre_hint;
+      if (_storySeed.tone_hint) BLUEPRINT.data.core.tone = _storySeed.tone_hint;
+      if (_storySeed.initial_conflict) BLUEPRINT.data.core.premise = _storySeed.initial_conflict;
+      if (_storySeed.platform_advice) BLUEPRINT.data.core.target_platform = _storySeed.platform_advice;
+      BLUEPRINT._loaded = true;
+      BLUEPRINT.save();
+    }
+    // 果冻收缩动画 + 灰幕渐隐
+    document.getElementById('obLoading').style.display = 'none';
+    document.getElementById('onboardingCard').classList.add('shrink');
+    document.getElementById('onboardingMask').classList.add('fade-out');
+    setTimeout(function() {
+      document.getElementById('onboardingOverlay').style.display = 'none';
+      document.getElementById('onboardingCard').classList.remove('shrink');
+      document.getElementById('onboardingMask').classList.remove('fade-out');
+      document.querySelectorAll('.ob-step').forEach(function(s) { s.style.display = ''; });
+      document.getElementById('obSkip').style.display = '';
+      // 调配师问候语
+      var greetMsg = { type:'chat', role:'assistant', time:Date.now(), agent:'orchestrator', content:result.opening_message };
+      agentMsgs.push(greetMsg);
+      appendMsgToDOM(renderSingleMsg(greetMsg));
+      if (result.approach_reason) console.log('[OB] 方案选择: '+result.approach+' - '+result.approach_reason);
+      console.log('[OB] 引导问卷完成 方案='+_currentApproach+' seed='+JSON.stringify(_storySeed));
+      localStorage.setItem('write_onboarding_done', '1');
+      scrollToBottomIfAtBottom();
+    }, 500);
+  },
+
+  retake: function() {
+    this._submitted = false;
+    this.answers = {};
+    this.currentStep = 1;
+    // 清除所有选项的选中态
+    document.querySelectorAll('.ob-opt.selected').forEach(function(o) { o.classList.remove('selected'); });
+    // 重置DB标记（仅开发者模式下调用的重填）
+    api('POST','/user/settings', { key:'onboarding_completed', value:'0' }).catch(function(){});
+    localStorage.removeItem('write_onboarding_done');
+    document.querySelectorAll('.ob-step').forEach(function(s) { s.style.display = ''; });
+    document.getElementById('obLoading').style.display = 'none';
+    document.getElementById('obSkip').style.display = '';
+    document.getElementById('obSubmit').disabled = true;
+    document.getElementById('onboardingCard').classList.remove('shrink');
+    document.getElementById('onboardingMask').classList.remove('fade-out');
+    document.getElementById('onboardingOverlay').style.display = 'flex';
+    OB._showStep(1);
+  }
+};
+
+// 全局变量：当前引导方案和故事种子
+var _currentApproach = 'A2_then_B1';
+var _storySeed = {};
+var _pendingCheckpoint = null; // {msgIdx, cpType, cpData, msgId}
+
 // ==================== SSE ====================
 (function(){var sse=new EventSource('/api/sse?token='+encodeURIComponent(token));sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='kicked'){localStorage.removeItem('canvas_token');localStorage.removeItem('canvas_username');window.location.replace('/login.html?reason=kicked');}}catch(ex){}});sse.onerror=function(){console.log('[Write] 踢出SSE断线，自动重连中...');};})();
 
-(function(){var sseUrl='/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);var sse=new EventSource(sseUrl);sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='connected'){console.log('[Write] SSE已连接 projectId='+d.projectId);_updateOnlineCount();return;}if(d.type==='agent-message'&&d.msg){if(!agentBusy){var sseMsg={type:'chat',role:'assistant',time:Date.now(),agent:d.msg.agent_type,content:d.msg.content,thinking:d.msg.thinking||''};agentMsgs.push(sseMsg);appendMsgToDOM(renderSingleMsg(sseMsg));scrollToBottomIfAtBottom();}}}catch(ex){}});sse.onerror=function(){console.log('[Write] Agent SSE断线，自动重连中...');};window._writeSse=sse;})();
+(function(){var sseUrl='/api/write-sse?projectId='+projectId+'&token='+encodeURIComponent(token);var sse=new EventSource(sseUrl);sse.addEventListener('message',function(e){try{var d=JSON.parse(e.data);if(d.type==='connected'){console.log('[Write] SSE已连接 projectId='+d.projectId);_updateOnlineCount();return;}if(d.type==='reload-chat'||d.type==='stream-done'){console.log('[Write] SSE触发reload-chat');reloadHistoryFromDB();return;}if(d.type==='agent-message'&&d.msg){if(!agentBusy){var sseMsg={type:'chat',role:'assistant',time:Date.now(),agent:d.msg.agent_type,content:d.msg.content,thinking:d.msg.thinking||''};agentMsgs.push(sseMsg);appendMsgToDOM(renderSingleMsg(sseMsg));CTX_RING.update();scrollToBottomIfAtBottom();}}}catch(ex){}});sse.onerror=function(){console.log('[Write] Agent SSE断线，自动重连中...');};window._writeSse=sse;})();
 
 // 页面刷新/关闭前通知后端终止SSE连接（让后端检测req.aborted并转入后台）
 
 // ==================== 初始化 ====================
+BLUEPRINT.load();
+
+// 预检：用户设置 → 决定是否显示问卷（onboarding_completed 存DB，dev_mode 存localStorage）
+(function() {
+  var devMode = DEV_MODE.enabled;
+  api('GET','/user/settings').then(function(settings) {
+    var onboardingDone = settings && settings.onboarding_completed === '1';
+    if (!onboardingDone) {
+      OB.show();
+      console.log('[Init] 首次使用，显示引导问卷');
+    } else if (devMode) {
+      document.getElementById('obRetakeBtn').style.display = 'block';
+      console.log('[Init] 开发者模式，问卷已跳过，重填入口已开启');
+    }
+  }).catch(function(e) {
+    // API不可用时用localStorage兜底
+    if (!localStorage.getItem('write_onboarding_done')) {
+      OB.show();
+      console.log('[Init] API不可用，localStorage兜底，显示问卷');
+    } else if (devMode) {
+      document.getElementById('obRetakeBtn').style.display = 'block';
+    }
+  });
+  // 同步dev_mode到DB
+  if (devMode) {
+    api('POST','/user/settings', { key:'dev_mode', value:'1' }).catch(function(){});
+  }
+})();
+
 api('GET','/writing-projects').then(function(projects){var p=projects?projects.find(function(x){return x.id===projectId;}):null;if(!p){window.location.replace('/projects.html');return;}writingData.title=p.title;});
 
 // 加载历史对话

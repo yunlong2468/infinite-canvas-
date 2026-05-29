@@ -9,6 +9,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const { HNSW, vectorToBlob } = require('./hnsw_index.js');
 
 let JWT_SECRET = process.env.JWT_SECRET || '';
 let JWT_EXPIRES = '7d';
@@ -297,6 +298,393 @@ app.post('/api/writing-projects/:id/conversations', auth, (req, res) => {
     saveDB();
     res.json({ id });
 });
+
+// ===== RAG 检索 API =====
+// GET 混合检索（BM25关键词 + 向量相似度）
+app.get('/api/writing-projects/:id/search', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var query = (req.query.q || '').trim();
+    var k = parseInt(req.query.k) || 10;
+    var sourceTypes = req.query.types ? req.query.types.split(',') : null;
+    if (!query) { res.json({ results: [], method: 'empty' }); return; }
+    var retrievalCfg = _getRetrievalConfig(req.userId);
+    // 关键词提取：简单Bigram+专有名词（角色名、地名等）
+    var keywords = _extractKeywords(query);
+    // 向量检索
+    var results = [];
+    Promise.resolve().then(async function() {
+        if (retrievalCfg) {
+            var emb = await _generateEmbedding(query, retrievalCfg);
+            if (emb) {
+                var vecResults = HNSW.search(new Float32Array(emb.vector), k * 2, projectId);
+                for (var vi = 0; vi < vecResults.length; vi++) {
+                    results.push({ source_type: 'vector', chunk_id: vecResults[vi].id, score: 1 - vecResults[vi].dist, method: 'vector' });
+                }
+            }
+        }
+        // 关键词精确匹配（如果向量检索失败或数量不足，补充BM25）
+        if (keywords.length > 0) {
+            var bm25Results = _bm25Search(projectId, keywords, sourceTypes, k);
+            // RRF融合
+            var merged = _rrfMerge(results, bm25Results, 0.3);
+            // 从DB加载完整内容
+            var finalResults = [];
+            for (var mi = 0; mi < merged.length && finalResults.length < k; mi++) {
+                var chunkId = merged[mi].chunk_id;
+                var chunk = queryOne('SELECT * FROM rag_chunks WHERE id=?', [chunkId]);
+                if (chunk) {
+                    finalResults.push({
+                        id: chunk.id, source_type: chunk.source_type, source_id: chunk.source_id,
+                        content: chunk.content_text, metadata: safeJsonParse(chunk.metadata_json, {}),
+                        score: merged[mi].score, method: merged[mi].method
+                    });
+                }
+            }
+            res.json({ results: finalResults, method: 'hybrid', keywords: keywords });
+        } else {
+            // 仅向量结果
+            var vr = [];
+            for (var ri = 0; ri < Math.min(results.length, k); ri++) {
+                var chunk = queryOne('SELECT * FROM rag_chunks WHERE id=?', [results[ri].chunk_id]);
+                if (chunk) vr.push({ id: chunk.id, source_type: chunk.source_type, source_id: chunk.source_id, content: chunk.content_text, metadata: safeJsonParse(chunk.metadata_json, {}), score: results[ri].score, method: 'vector' });
+            }
+            res.json({ results: vr, method: 'vector', keywords: keywords });
+        }
+    }).catch(function(e) { console.log('[RAG] 检索失败:', e.message); res.json({ results: [], method: 'error', error: e.message }); });
+});
+
+// POST 写入/更新rag_chunks（供压缩层和检查点提交时调用）
+app.post('/api/writing-projects/:id/chunks', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var { source_type, source_id, content_text, metadata_json } = req.body;
+    if (!source_type || !source_id || !content_text) { res.status(400).json({ error: '缺少必要字段' }); return; }
+    var retrievalCfg = _getRetrievalConfig(req.userId);
+    _enqueueEmbedding(projectId, source_type, source_id, content_text, metadata_json || '{}', retrievalCfg);
+    res.json({ ok: true, queued: true });
+});
+
+// ===== 故事蓝图 API =====
+app.get('/api/writing-projects/:id/blueprint', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var bp = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    res.json(bp ? { version: bp.version, blueprint: safeJsonParse(bp.blueprint_json, {}), summary: bp.compression_summary, created_at: bp.created_at } : { version: 0, blueprint: _emptyBlueprint(), summary: '' });
+});
+
+app.post('/api/writing-projects/:id/blueprint', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var { blueprint, compression_summary, compressed_rounds } = req.body;
+    if (!blueprint) { res.status(400).json({ error: '缺少blueprint' }); return; }
+    var latest = queryOne('SELECT version FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    var newVersion = (latest ? latest.version : 0) + 1;
+    // 保留最近3版，删除旧版
+    if (newVersion > 3) {
+        dbRun('DELETE FROM story_blueprints WHERE project_id=? AND version <= ?', [projectId, newVersion - 3]);
+    }
+    dbRun('INSERT INTO story_blueprints (project_id, version, blueprint_json, compression_summary, compressed_rounds) VALUES (?,?,?,?,?)',
+        [projectId, newVersion, JSON.stringify(blueprint), compression_summary || '', compressed_rounds || '']);
+    saveDB();
+    // 异步更新蓝图块的embedding
+    var retrievalCfg = _getRetrievalConfig(req.userId);
+    _enqueueEmbedding(projectId, 'blueprint', 'latest', JSON.stringify(blueprint), JSON.stringify({ version: newVersion }), retrievalCfg);
+    res.json({ version: newVersion, ok: true });
+});
+
+// GET 蓝图版本历史
+app.get('/api/writing-projects/:id/blueprint/history', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var history = queryAll('SELECT version, compression_summary, compressed_rounds, created_at FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 3', [projectId]);
+    res.json(history || []);
+});
+
+// POST 回退蓝图到指定版本
+app.post('/api/writing-projects/:id/blueprint/rollback', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var targetVersion = parseInt(req.body.version);
+    if (!targetVersion) { res.status(400).json({ error: '缺少version' }); return; }
+    var target = queryOne('SELECT * FROM story_blueprints WHERE project_id=? AND version=?', [projectId, targetVersion]);
+    if (!target) { res.status(404).json({ error: '版本不存在' }); return; }
+    var latest = queryOne('SELECT version FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    var newVersion = (latest ? latest.version : 0) + 1;
+    dbRun('INSERT INTO story_blueprints (project_id, version, blueprint_json, compression_summary, compressed_rounds) VALUES (?,?,?,?,?)',
+        [projectId, newVersion, target.blueprint_json, '回退到v'+targetVersion, '']);
+    saveDB();
+    res.json({ version: newVersion, ok: true, rolled_back_from: targetVersion });
+});
+
+// ===== RAG 调试状态 API =====
+app.get('/api/writing-projects/:id/rag-stats', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var chunkCount = queryOne('SELECT COUNT(*) as c FROM rag_chunks WHERE project_id=?', [projectId]);
+    var embedCount = queryOne('SELECT COUNT(*) as c FROM rag_chunks WHERE project_id=? AND embedding_blob IS NOT NULL', [projectId]);
+    var hnswStats = HNSW.stats();
+    res.json({
+        project_id: projectId,
+        total_chunks: chunkCount ? chunkCount.c : 0,
+        embedded_chunks: embedCount ? embedCount.c : 0,
+        hnsw_nodes: hnswStats.nodeCount,
+        hnsw_max_level: hnswStats.maxLevel,
+        embed_cache_size: _embedCache.length,
+        embed_queue_size: _embedQueue.length
+    });
+});
+
+// ===== 压缩 API =====
+app.post('/api/writing-projects/:id/compress', auth, async (req, res) => {
+    var projectId = parseInt(req.params.id);
+    console.log('[Compress] 触发全量压缩 projectId='+projectId);
+    try {
+        var blueprint = await _fullCompressBlueprint(projectId, req.userId);
+        res.json({ ok: true, blueprint: blueprint });
+    } catch(e) {
+        console.log('[Compress] 压缩失败:', e.message);
+        res.status(500).json({ error: '压缩失败: '+e.message });
+    }
+});
+
+// ===== 检查点 API =====
+// POST 创建检查点卡片消息（编排器调用，生成结构化卡片插入对话流）
+app.post('/api/writing-projects/:id/checkpoint', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var { checkpoint_type, title, fields } = req.body;
+    if (!checkpoint_type || !fields) { res.status(400).json({ error: '缺少checkpoint数据' }); return; }
+    var checkpointData = { type: checkpoint_type, title: title || '检查点', fields: fields, committed: false, version: 1 };
+    var msgId = dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, metadata) VALUES (?,?,?,?,?)',
+        [projectId, 'orchestrator', 'assistant', title || '', JSON.stringify({ type: 'checkpoint', checkpoint_type: checkpoint_type, data: fields, committed: false })]);
+    saveDB();
+    res.json({ ok: true, msg_id: msgId });
+});
+
+// POST 提交检查点 → 锁定卡片 + 增量更新蓝图
+app.post('/api/writing-projects/:id/checkpoint/:msgId/commit', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var msgId = parseInt(req.params.msgId);
+    var msg = queryOne('SELECT * FROM agent_conversations WHERE id=? AND project_id=?', [msgId, projectId]);
+    if (!msg) { res.status(404).json({ error: '检查点消息不存在' }); return; }
+    var meta = safeJsonParse(msg.metadata, {});
+    if (meta.committed) { res.json({ ok: true, already_committed: true }); return; }
+    // 锁定：更新metadata标记为已提交
+    meta.committed = true;
+    meta.committed_at = new Date().toISOString();
+    dbRun('UPDATE agent_conversations SET metadata=? WHERE id=?', [JSON.stringify(meta), msgId]);
+    // 增量更新蓝图
+    var checkpointData = meta.data || {};
+    _incrementalUpdateBlueprint(projectId, meta.checkpoint_type || 'character', checkpointData);
+    saveDB();
+    console.log('[Checkpoint] 已提交 type=' + meta.checkpoint_type + ' msgId=' + msgId);
+    res.json({ ok: true, checkpoint_type: meta.checkpoint_type });
+});
+
+// ===== 用户设置 API =====
+app.get('/api/user/settings', auth, (req, res) => {
+    var settings = queryAll('SELECT key, value FROM user_settings WHERE user_id=?', [req.userId]);
+    var map = {};
+    if (settings) settings.forEach(function(s) { map[s.key] = s.value; });
+    res.json(map);
+});
+
+app.post('/api/user/settings', auth, (req, res) => {
+    var { key, value } = req.body;
+    if (!key) { res.status(400).json({ error: '缺少key' }); return; }
+    var existing = queryOne('SELECT id FROM user_settings WHERE user_id=? AND key=?', [req.userId, key]);
+    if (existing) {
+        dbRun('UPDATE user_settings SET value=?, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND key=?', [String(value), req.userId, key]);
+    } else {
+        dbRun('INSERT INTO user_settings (user_id, key, value) VALUES (?,?,?)', [req.userId, key, String(value)]);
+    }
+    saveDB();
+    res.json({ ok: true });
+});
+
+// ===== 写作引导问卷分析 API =====
+app.post('/api/writing/onboarding/analyze', auth, async (req, res) => {
+    var { experience, duration, platform, status } = req.body;
+    if (!experience || !duration || !platform || !status) {
+        res.status(400).json({ error: '缺少问卷答案' }); return;
+    }
+    // 标记问卷已完成
+    var existing = queryOne('SELECT id FROM user_settings WHERE user_id=? AND key=?', [req.userId, 'onboarding_completed']);
+    if (existing) {
+        dbRun('UPDATE user_settings SET value=?, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND key=?', ['1', req.userId, 'onboarding_completed']);
+    } else {
+        dbRun('INSERT INTO user_settings (user_id, key, value) VALUES (?,?,?)', [req.userId, 'onboarding_completed', '1']);
+    }
+    saveDB();
+
+    var cfg = _getRetrievalConfig(req.userId);
+    if (!cfg) { res.json(_defaultOnboarding(experience, status)); return; }
+    var prompt = _buildOnboardingPrompt(experience, duration, platform, status);
+    try {
+        var resp = await fetch(cfg.endpoint + '/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.api_key },
+            body: JSON.stringify({
+                model: cfg.model || 'deepseek-flash',
+                messages: [
+                    { role: 'system', content: '你是小说创作引导专家。根据用户的写作背景，推荐最合适的引导方案并生成开场问候。只输出纯JSON，不包含解释文字。' },
+                    { role: 'user', content: prompt }
+                ],
+                temperature: 0.6,
+                thinking: { type: 'disabled' }
+            })
+        });
+        if (!resp.ok) throw new Error('LLM HTTP '+resp.status);
+        var data = await resp.json();
+        var reply = data.choices && data.choices[0] && data.choices[0].message ? data.choices[0].message.content : '';
+        var json = _extractOnboardingJson(reply);
+        res.json(json);
+    } catch(e) {
+        if (!cfg) console.log('[Onboarding] 未配置API，使用默认方案');
+        else console.log('[Onboarding] LLM分析失败，使用默认方案:', e.message);
+        res.json(_defaultOnboarding(experience, status));
+    }
+});
+
+function _buildOnboardingPrompt(experience, duration, platform, status) {
+    var labels = {
+        experience: { 'newbie': '新手-刚开始接触写作', 'some': '有经验-写过但不多', 'veteran': '老手-写过不少作品' },
+        duration: { 'just_started': '刚开始', 'half_year': '半年左右', '1_3_years': '1-3年', '3_plus_years': '3年以上' },
+        platform: { 'fanqie': '番茄小说', 'qidian': '起点中文网', 'feilu': '飞卢小说网', 'any': '不限平台', 'other': '其他平台' },
+        status: { 'has_idea': '有灵感想法', 'blank': '完全空白-不知道写什么' }
+    };
+    return '用户写作背景：\n'
+        + '- 写作经验：' + (labels.experience[experience] || experience) + '\n'
+        + '- 写作时长：' + (labels.duration[duration] || duration) + '\n'
+        + '- 目标平台：' + (labels.platform[platform] || platform) + '\n'
+        + '- 当前状态：' + (labels.status[status] || status) + '\n\n'
+        + '请输出JSON（不要markdown代码块）：\n'
+        + '{\n'
+        + '  "approach": "A2_then_B1" | "B1_direct" | "A1_structured",\n'
+        + '  "approach_reason": "简短说明为什么选择这个方案",\n'
+        + '  "opening_message": "调配师的第一句问候语（50-150字，自然亲切）",\n'
+        + '  "story_seed": {\n'
+        + '    "genre_hint": "从回答推断的题材方向，如不确定填空字符串",\n'
+        + '    "tone_hint": "从回答推断的风格，如不确定填空字符串",\n'
+        + '    "initial_conflict": "初步的核心冲突方向，如不确定填空字符串",\n'
+        + '    "platform_advice": "针对目标平台的创作建议（50字以内）"\n'
+        + '  }\n'
+        + '}\n\n'
+        + '方案选择规则：\n'
+        + '- 完全空白(status=blank) + 新手(experience=newbie) → A1_structured（递进式提问链）\n'
+        + '- 完全空白 + 有经验 → A2_then_B1（先给模板方向，选定后检查点深挖）\n'
+        + '- 有灵感(status=has_idea) + 任何经验 → B1_direct（检查点模式，直接开始聊想法）\n'
+        + '- 老手(veteran) + 有灵感 → 可用B1_direct，问候语简洁直接';
+}
+
+function _extractOnboardingJson(text) {
+    try {
+        var clean = text.replace(/```json\s*|\s*```/g, '').trim();
+        var i1 = clean.indexOf('{'), i2 = clean.lastIndexOf('}');
+        if (i1 >= 0 && i2 > i1) clean = clean.substring(i1, i2 + 1);
+        return JSON.parse(clean);
+    } catch(e) {
+        return _defaultOnboarding('some', 'has_idea');
+    }
+}
+
+function _defaultOnboarding(experience, status) {
+    var isNewbie = experience === 'newbie';
+    var isBlank = status === 'blank';
+    if (isBlank && isNewbie) {
+        return {
+            approach: 'A1_structured',
+            approach_reason: '新手且无灵感，使用递进式提问链',
+            opening_message: '你好！我是你的创作搭档。别担心没有方向——我准备了一套引导流程，帮你在聊天中自然地找到想写的故事。准备好了吗？先聊聊你平时爱看什么类型的小说吧~',
+            story_seed: { genre_hint: '', tone_hint: '', initial_conflict: '', platform_advice: '先确定方向再考虑平台适配' }
+        };
+    }
+    if (isNewbie) {
+        return {
+            approach: 'A2_then_B1',
+            approach_reason: '新手但有灵感方向，先给模板参考再深入打磨',
+            opening_message: '你好！很高兴认识你。你已经有了一些想法，这非常好。让我先根据你的方向准备几个故事模板供参考，帮你把灵感打磨成稳固的故事骨架。你的灵感是什么样的？尽管说~',
+            story_seed: { genre_hint: '', tone_hint: '', initial_conflict: '', platform_advice: '结合目标平台的热门方向微调设定' }
+        };
+    }
+    return {
+        approach: 'B1_direct',
+        approach_reason: '有经验的作者，直接使用检查点模式高效推进',
+        opening_message: '你好！看到你已经有创作经验了，我就不废话了。说说你心里的故事吧——主角是谁？世界观长什么样？想到哪聊到哪，我会在关键节点帮你梳理。',
+        story_seed: { genre_hint: '', tone_hint: '', initial_conflict: '', platform_advice: '保持你已有的创作风格，注意平台读者偏好' }
+    };
+}
+
+// ===== 辅助函数：关键词提取（简易Bigram） =====
+function _extractKeywords(text) {
+    if (!text) return [];
+    var keywords = [];
+    // 提取引号内的专有名词
+    var quoted = text.match(/[""]([^""]{1,10})[""]/g);
+    if (quoted) quoted.forEach(function(q) { keywords.push(q.replace(/[""]/g,'')); });
+    // 提取常见写作术语
+    var terms = ['主角', '配角', '反派', '伏笔', '世界观', '大纲', '章节', '力量体系', '宗门', '修炼', '剧情'];
+    terms.forEach(function(t) { if (text.indexOf(t) >= 0) keywords.push(t); });
+    // Bigram分词（中文2字词组）
+    var cleaned = text.replace(/[，。！？、；：""''（）\s]/g, '');
+    for (var i = 0; i < cleaned.length - 1; i++) {
+        var bigram = cleaned.substring(i, i + 2);
+        if (keywords.indexOf(bigram) < 0) keywords.push(bigram);
+    }
+    return keywords.slice(0, 20); // 最多20个关键词
+}
+
+// BM25关键词匹配检索
+function _bm25Search(projectId, keywords, sourceTypes, k) {
+    var results = [];
+    var chunks = queryAll('SELECT * FROM rag_chunks WHERE project_id=?', [projectId]);
+    if (!chunks || !chunks.length) return results;
+    var docFreq = {};
+    keywords.forEach(function(kw) {
+        docFreq[kw] = 0;
+        chunks.forEach(function(c) {
+            if ((c.content_text || '').indexOf(kw) >= 0) docFreq[kw]++;
+        });
+    });
+    var totalDocs = chunks.length;
+    chunks.forEach(function(c) {
+        if (sourceTypes && sourceTypes.indexOf(c.source_type) < 0) return;
+        var score = 0;
+        var text = c.content_text || '';
+        keywords.forEach(function(kw) {
+            var tf = (text.match(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g')) || []).length;
+            var df = docFreq[kw] || 1;
+            var idf = Math.log((totalDocs - df + 0.5) / (df + 0.5) + 1);
+            score += tf * idf;
+        });
+        if (score > 0) results.push({ chunk_id: c.id, score: score, method: 'bm25' });
+    });
+    results.sort(function(a, b) { return b.score - a.score; });
+    return results.slice(0, k);
+}
+
+// RRF融合（Reciprocal Rank Fusion）
+function _rrfMerge(vecResults, bm25Results, alpha) {
+    var merged = {};
+    var addScore = function(id, score, method) {
+        if (!merged[id]) merged[id] = { chunk_id: id, score: 0, method: method };
+        merged[id].score += score;
+        if (method !== merged[id].method) merged[id].method = 'hybrid';
+    };
+    vecResults.forEach(function(r, i) { addScore(r.chunk_id, alpha * (1 - r.score) + (1 - alpha) * (1 / (i + 60)), r.method); });
+    bm25Results.forEach(function(r, i) { addScore(r.chunk_id, alpha * (1 / (i + 60)) + (1 - alpha) * Math.min(1, r.score / 10), r.method); });
+    var list = Object.values(merged);
+    list.sort(function(a, b) { return b.score - a.score; });
+    return list;
+}
+
+// 空蓝图模板
+function safeJsonParse(str, def) {
+    try { return JSON.parse(str); } catch(e) { return def || {}; }
+}
+
+function _emptyBlueprint() {
+    return {
+        core: { premise: '', genre: '', tone: '', target_platform: '', target_audience: '' },
+        protagonist: { name: '', arc_summary: '', current_stage: '', key_traits: [], core_conflict: '' },
+        world: { power_system: '', era_summary: '', key_factions: [], pending_questions: [] },
+        plot: { main_thread: '', sub_threads: [], foreshadowing: [] },
+        outline_progress: { current_volume: 1, current_chapter: 1, chapters_written: 0, next_chapter_hook: '' }
+    };
+}
 
 // POST 撤回最近的用户消息组（该用户消息及其后的所有agent消息）
 app.post('/api/writing-projects/:id/undo-last', auth, (req, res) => {
@@ -911,7 +1299,7 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
                         outline['卷'].forEach(function(vol, vi) {
                             var vid = dbRun('INSERT INTO writing_volumes (project_id, volume_no, title, sort_order) VALUES (?,?,?,?)', [projectId, vi+1, vol['卷名']||('第'+(vi+1)+'卷'), vi+1]);
                             (vol['章']||[]).forEach(function(chap) {
-                                dbRun('INSERT INTO writing_chapters (project_id, volume_id, chapter_no, title) VALUES (?,?,?,?)', [projectId, vid, (dbRun('SELECT COUNT(*) as c FROM writing_chapters WHERE volume_id=?',[vid]),0), chap['章名']||'']);
+                                dbRun('INSERT INTO writing_chapters (project_id, volume_id, chapter_no, title) VALUES (?,?,?,?)', [projectId, vid, (function(){var cnt=queryOne('SELECT COUNT(*) as c FROM writing_chapters WHERE volume_id=?',[vid]);return(cnt?cnt.c:0)+1;})(), chap['章名']||'']);
                             });
                         });
                         saveDB();
@@ -1278,7 +1666,8 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
     var recentMsgs = history.slice(-30);
 
     // 构建消息（注入项目进度摘要）
-    var systemContent = ORCHESTRATOR_SYSTEM + _buildProjectSummary(projectId, req.userId);
+    var assembledContext = await _buildAssembledContext(projectId, req.userId, content, 'chat');
+    var systemContent = ORCHESTRATOR_SYSTEM + '\n\n' + assembledContext;
     var msgs = [{ role:'system', content: systemContent }];
     recentMsgs.forEach(function(m) {
         if (m.role==='user') msgs.push({ role:'user', content:m.content });
@@ -1471,9 +1860,12 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                 var finalThinking = toolMsg.reasoning_content || '';
                 msgs.push({ role:'assistant', content:finalContent });
                 // 直接发送done（工具调用后的最终回复用非流式）
-                dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, thinking, token_used) VALUES (?,?,?,?,?,?)', [projectId, 'orchestrator', 'assistant', finalContent, finalThinking, (toolData.usage?toolData.usage.total_tokens:0)]); console.log('[Write LLM] 最终回复已存DB contentLen='+finalContent.length);
+                var orchMsgId = dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content, thinking, token_used) VALUES (?,?,?,?,?,?)', [projectId, 'orchestrator', 'assistant', finalContent, finalThinking, (toolData.usage?toolData.usage.total_tokens:0)]); console.log('[Write LLM] 最终回复已存DB contentLen='+finalContent.length);
+                _autoChunkMessage(projectId, 'orchestrator', 'assistant', finalContent, orchMsgId);
                 saveDB();
                 clearStreamBuffer(projectId);
+                // 通知前端重新加载对话（爬虫等子智能体tool_result已完成入库）
+                broadcastWriteEvent(projectId, {type:'reload-chat'});
                 res.write('data: '+JSON.stringify({type:'done',content:finalContent,thinking:finalThinking})+'\n\n');
                 res.end();
                 return;
@@ -1596,6 +1988,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 
             // 通知 SSE 客户端 + 清除磁盘缓冲和停止标记
             broadcastWriteEvent(projectId, {type:'stream-done',content:fullContent,thinking:fullThinking});
+            broadcastWriteEvent(projectId, {type:'reload-chat'});
             clearStreamBuffer(projectId);
             try { var sm = path.join(BUFFER_DIR, 'stop_'+projectId); if (fs.existsSync(sm)) fs.unlinkSync(sm); } catch(e) {}
 
@@ -1621,7 +2014,8 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
     console.log('[Write LLM] 项目='+projectId+' 用户输入长度='+content.length);
 
     // 保存用户消息
-    dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)', [projectId, 'user', 'user', content]);
+    var userMsgId = dbRun('INSERT INTO agent_conversations (project_id, agent_type, role, content) VALUES (?,?,?,?)', [projectId, 'user', 'user', content]);
+    _autoChunkMessage(projectId, 'user', 'user', content, userMsgId);
 
     var reqBody = { model:model, messages:msgs, temperature:0.7, stream:false };
 
@@ -1829,6 +2223,337 @@ var OUTLINER_SYSTEM = '你是小说大纲生成专家。根据用户提供的小
 
 // streamCallback: 流式回调 function({type:'thinking'|'content', delta:'...'})，null=非流式
 // tools: 工具定义数组(用于request_tool机制)，null=不传工具
+// ===== RAG Embedding 生成 =====
+function _getRetrievalConfig(userId) {
+    var cfg = queryOne('SELECT * FROM agents WHERE user_id=? ORDER BY id LIMIT 1', [userId]);
+    if (!cfg || !cfg.api_key) return null;
+    // 优先使用 writing_agent_config 中首个配置了检索模型的记录，否则用默认LLM配置
+    var agents = queryAll('SELECT * FROM writing_agent_config WHERE project_id IN (SELECT id FROM writing_projects WHERE user_id=?)', [userId]);
+    var retModel = '', retEp = '', retKey = '';
+    if (agents && agents.length) {
+        for (var ai = 0; ai < agents.length; ai++) {
+            if (agents[ai].retrieval_model) { retModel = agents[ai].retrieval_model; retEp = agents[ai].retrieval_endpoint; retKey = agents[ai].retrieval_api_key; break; }
+        }
+    }
+    var baseEp = retEp || (cfg.api_endpoint ? cfg.api_endpoint.replace('/chat/completions','') : 'https://api.deepseek.com/v1');
+    return {
+        model: retModel || cfg.model || 'deepseek-v4-flash', // 默认用用户配置的模型，未配置则用Flash
+        endpoint: baseEp,
+        api_key: retKey || cfg.api_key
+    };
+}
+
+// Embedding查询缓存（LRU，减少API调用费用+延迟）
+var _embedCache = [];  // [{text, vector, dim, model, ts}]
+var _EMBED_CACHE_MAX = 100;
+function _findCachedEmbedding(text) {
+    var now = Date.now();
+    // 清理过期缓存（5分钟）
+    _embedCache = _embedCache.filter(function(e) { return now - e.ts < 300000; });
+    for (var i = 0; i < _embedCache.length; i++) {
+        if (_embedCache[i].text === text) { _embedCache[i].ts = now; return _embedCache[i]; }
+    }
+    return null;
+}
+function _cacheEmbedding(text, vector, dim, model) {
+    _embedCache.push({ text: text, vector: vector, dim: dim, model: model, ts: Date.now() });
+    if (_embedCache.length > _EMBED_CACHE_MAX) _embedCache.shift();
+}
+
+// 自动分块：消息写入时异步生成embedding
+function _autoChunkMessage(projectId, agentType, role, content, msgId) {
+    if (!content || content.length < 20) return; // 太短的不分块
+    var proj = queryOne('SELECT user_id FROM writing_projects WHERE id=?', [projectId]);
+    var retrievalCfg = proj ? _getRetrievalConfig(proj.user_id) : null;
+    if (!retrievalCfg) return;
+    var sourceType = role === 'user' ? 'conversation' : 'agent_' + agentType;
+    var sourceId = sourceType + '_' + (msgId || Date.now());
+    var meta = JSON.stringify({ agent: agentType, role: role, length: content.length });
+    _enqueueEmbedding(projectId, sourceType, sourceId, content.substring(0, 2000), meta, retrievalCfg);
+}
+
+// 检索降级：embedding不可用时纯BM25兜底
+async function _searchWithFallback(projectId, query, k, sourceTypes, retrievalCfg) {
+    if (!retrievalCfg) {
+        // 无API配置 → 纯BM25
+        return { results: _bm25ToResults(projectId, query, sourceTypes, k), method: 'bm25_fallback' };
+    }
+    try {
+        var cached = _findCachedEmbedding(query);
+        var emb;
+        if (cached) {
+            emb = { vector: cached.vector, dim: cached.dim, model: cached.model };
+        } else {
+            emb = await _generateEmbedding(query, retrievalCfg);
+            if (emb) _cacheEmbedding(query, emb.vector, emb.dim, emb.model);
+        }
+        if (!emb) throw new Error('embedding failed');
+        var keywords = _extractKeywords(query);
+        var vecResults = HNSW.search(new Float32Array(emb.vector), k * 2, projectId);
+        var bm25Results = _bm25Search(projectId, keywords, sourceTypes, k);
+        var merged = _rrfMerge(
+            vecResults.map(function(r) { return { chunk_id: r.id, score: 1 - r.dist, method: 'vector' }; }),
+            bm25Results,
+            0.3
+        );
+        return { results: _loadChunkResults(merged.slice(0, k)), method: 'hybrid', keywords: keywords };
+    } catch(e) {
+        console.log('[RAG] 向量检索失败，降级BM25:', e.message);
+        return { results: _bm25ToResults(projectId, query, sourceTypes, k), method: 'bm25_fallback' };
+    }
+}
+
+function _bm25ToResults(projectId, query, sourceTypes, k) {
+    var keywords = _extractKeywords(query);
+    var bm25 = _bm25Search(projectId, keywords, sourceTypes, k);
+    return _loadChunkResults(bm25);
+}
+
+function _loadChunkResults(ranked) {
+    var finalResults = [];
+    ranked.forEach(function(r) {
+        var chunk = queryOne('SELECT * FROM rag_chunks WHERE id=?', [r.chunk_id]);
+        if (chunk) {
+            finalResults.push({
+                id: chunk.id, source_type: chunk.source_type, source_id: chunk.source_id,
+                content: chunk.content_text, metadata: safeJsonParse(chunk.metadata_json, {}),
+                score: r.score, method: r.method || 'bm25'
+            });
+        }
+    });
+    return finalResults;
+}
+
+var _embedDisabled = false; // 首次404后停用embedding，完全依赖BM25
+
+// 单条文本生成embedding（同步调用）
+async function _generateEmbedding(text, retrievalCfg) {
+    if (_embedDisabled || !retrievalCfg || !text) return null;
+    try {
+        var resp = await fetch(retrievalCfg.endpoint + '/embeddings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + retrievalCfg.api_key },
+            body: JSON.stringify({ model: retrievalCfg.model, input: text })
+        });
+        if (!resp.ok) {
+            if (resp.status === 404) { _embedDisabled = true; console.log('[Embedding] 端点404，已停用embedding，后续仅用BM25检索'); }
+            else console.log('[Embedding] API失败 status='+resp.status);
+            return null;
+        }
+        var data = await resp.json();
+        if (data.data && data.data[0] && data.data[0].embedding) {
+            return { vector: data.data[0].embedding, dim: data.data[0].embedding.length, model: data.model };
+        }
+    } catch(e) { console.log('[Embedding] 调用异常:', e.message); }
+    return null;
+}
+
+// 异步批量生成embedding队列（不阻塞请求）
+var _embedQueue = [], _embedTimer = null;
+function _enqueueEmbedding(projectId, sourceType, sourceId, contentText, metadataJson, retrievalCfg) {
+    if (!contentText || !retrievalCfg) return;
+    _embedQueue.push({ projectId, sourceType, sourceId, contentText, metadataJson, retrievalCfg });
+    if (!_embedTimer) _embedTimer = setTimeout(_processEmbedQueue, 500);
+}
+
+async function _processEmbedQueue() {
+    _embedTimer = null;
+    if (_embedQueue.length === 0) return;
+    if (_embedDisabled) { _embedQueue = []; return; } // embedding已停用，清空队列
+    var batch = _embedQueue.splice(0, Math.min(_embedQueue.length, 10));
+    console.log('[Embedding] 批量处理 '+batch.length+' 条');
+    for (var i = 0; i < batch.length; i++) {
+        var item = batch[i];
+        try {
+            // 检查是否已有相同source_id的块
+            var existing = queryOne('SELECT id, content_text FROM rag_chunks WHERE project_id=? AND source_type=? AND source_id=?', [item.projectId, item.sourceType, item.sourceId]);
+            if (existing && existing.content_text === item.contentText) continue; // 内容未变，跳过
+            var emb = await _generateEmbedding(item.contentText, item.retrievalCfg);
+            if (!emb) continue;
+            var blob = vectorToBlob(new Float32Array(emb.vector));
+            if (existing) {
+                dbRun('UPDATE rag_chunks SET content_text=?, metadata_json=?, embedding_model=?, embedding_dim=?, embedding_blob=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                    [item.contentText, item.metadataJson, emb.model, emb.dim, blob, existing.id]);
+            } else {
+                dbRun('INSERT INTO rag_chunks (project_id, source_type, source_id, content_text, metadata_json, embedding_model, embedding_dim, embedding_blob) VALUES (?,?,?,?,?,?,?,?)',
+                    [item.projectId, item.sourceType, item.sourceId, item.contentText, item.metadataJson, emb.model, emb.dim, blob]);
+            }
+            HNSW.insert(item.projectId+':'+item.sourceType+':'+item.sourceId, new Float32Array(emb.vector), item.projectId);
+        } catch(e) { console.log('[Embedding] 队列处理异常:', e.message); }
+    }
+    saveDB();
+    if (_embedQueue.length > 0) _embedTimer = setTimeout(_processEmbedQueue, 500);
+}
+
+// ===== 压缩层：增量/存量/全量 =====
+
+// 增量更新：检查点提交后追加数据到蓝图
+function _incrementalUpdateBlueprint(projectId, checkpointType, checkpointData) {
+    var bp = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    var blueprint = bp ? safeJsonParse(bp.blueprint_json, _emptyBlueprintObj()) : _emptyBlueprintObj();
+    var changed = false;
+    switch (checkpointType) {
+        case 'character':
+            var c = checkpointData;
+            if (c.name && blueprint.protagonist.name !== c.name) { blueprint.protagonist.name = c.name; changed = true; }
+            if (c.arc && c.arc !== blueprint.protagonist.arc_summary) { blueprint.protagonist.arc_summary = c.arc; changed = true; }
+            if (c.traits && c.traits.length) { blueprint.protagonist.key_traits = c.traits; changed = true; }
+            if (c.conflict && c.conflict !== blueprint.protagonist.core_conflict) { blueprint.protagonist.core_conflict = c.conflict; changed = true; }
+            break;
+        case 'worldbuilding':
+            var w = checkpointData;
+            if (w.power_system && w.power_system !== blueprint.world.power_system) { blueprint.world.power_system = w.power_system; changed = true; }
+            if (w.era && w.era !== blueprint.world.era_summary) { blueprint.world.era_summary = w.era; changed = true; }
+            if (w.factions && w.factions.length) { blueprint.world.key_factions = w.factions; changed = true; }
+            if (w.questions && w.questions.length) { blueprint.world.pending_questions = w.questions; changed = true; }
+            break;
+        case 'conflict':
+            var cf = checkpointData;
+            if (cf.main_thread && cf.main_thread !== blueprint.plot.main_thread) { blueprint.plot.main_thread = cf.main_thread; changed = true; }
+            if (cf.sub_threads && cf.sub_threads.length) { blueprint.plot.sub_threads = cf.sub_threads; changed = true; }
+            break;
+        case 'foreshadowing':
+            var f = checkpointData;
+            if (f.name && f.description) {
+                var exists = blueprint.plot.foreshadowing.some(function(x) { return x.name === f.name; });
+                if (!exists) { blueprint.plot.foreshadowing.push({ name: f.name, planted: f.planted_chapter || '', payoff: f.payoff_chapter || '', status: 'planted' }); changed = true; }
+            }
+            break;
+    }
+    if (changed) _saveCompressedBlueprint(projectId, blueprint, '增量: '+checkpointType, '');
+    return blueprint;
+}
+
+// 存量冲突检测：LLM轻量判定对话与蓝图的矛盾
+async function _detectStockConflicts(projectId, recentMessages, userId) {
+    var bp = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    if (!bp) return null;
+    var blueprint = safeJsonParse(bp.blueprint_json, {});
+    var cfg = _getRetrievalConfig(userId);
+    if (!cfg) return null;
+    var prompt = '当前设定：\n' + JSON.stringify({ protagonist: blueprint.protagonist, world: blueprint.world, plot: { main_thread: blueprint.plot.main_thread } }) + '\n\n最近对话：\n' + recentMessages + '\n\n检查对话是否有明确推翻或修正已有设定。输出JSON：{"conflicts":[{"field":"路径","old":"旧值","new":"新值","confidence":0.9}]}。无冲突返回{"conflicts":[]}。';
+    try {
+        var resp = await fetch(cfg.endpoint + '/chat/completions', {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.api_key },
+            body: JSON.stringify({ model: cfg.model, messages: [{ role: 'user', content: prompt }], temperature: 0.3, thinking: { type: 'disabled' } })
+        });
+        if (!resp.ok) return null;
+        var data = await resp.json();
+        var reply = (data.choices && data.choices[0] && data.choices[0].message) ? data.choices[0].message.content : '';
+        var json = safeJsonParse(reply.replace(/```json|```/g, ''), { conflicts: [] });
+        return (json.conflicts && json.conflicts.length > 0) ? json : null;
+    } catch(e) { console.log('[Compress] 存量检测失败:', e.message); return null; }
+}
+
+// 全量压缩：收尾增量+存量 -> 生成摘要 -> 更新蓝图
+async function _fullCompressBlueprint(projectId, userId) {
+    var bp = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    var blueprint = bp ? safeJsonParse(bp.blueprint_json, _emptyBlueprintObj()) : _emptyBlueprintObj();
+    var msgs = queryAll('SELECT agent_type, role, content FROM agent_conversations WHERE project_id=? ORDER BY created_at DESC LIMIT 20', [projectId]);
+    var recentText = '';
+    if (msgs) msgs.reverse().forEach(function(m) {
+        recentText += (m.role === 'user' ? '用户' : m.agent_type) + '：' + (m.content || '').substring(0, 200) + '\n';
+    });
+    var cfg = _getRetrievalConfig(userId);
+    if (!cfg) { _saveCompressedBlueprint(projectId, blueprint, '结构整理（无LLM）', ''); return blueprint; }
+    var prompt = '当前故事蓝图：\n' + JSON.stringify(blueprint, null, 2) + '\n\n最近对话：\n' + recentText + '\n\n请完成：\n1. 将对话中的新信息合并到蓝图（只增不改，不确定加?标记）\n2. 生成compression_summary（50字以内）\n3. 标记已解决的pending_questions\n输出JSON：{"blueprint":{...},"summary":"..."}';
+    try {
+        var resp = await fetch(cfg.endpoint + '/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.api_key },
+            body: JSON.stringify({ model: cfg.model, messages: [{ role: 'user', content: prompt }], temperature: 0.4, thinking: { type: 'disabled' } })
+        });
+        if (!resp.ok) throw new Error('LLM HTTP ' + resp.status);
+        var data = await resp.json();
+        var reply = (data.choices && data.choices[0] && data.choices[0].message) ? data.choices[0].message.content : '';
+        var json = safeJsonParse(reply.replace(/```json|```/g, ''), {});
+        if (json.blueprint) { _saveCompressedBlueprint(projectId, json.blueprint, json.summary || '全量压缩', ''); return json.blueprint; }
+    } catch(e) { console.log('[Compress] 全量压缩失败:', e.message); }
+    _saveCompressedBlueprint(projectId, blueprint, '结构整理（降级）', '');
+    return blueprint;
+}
+
+function _saveCompressedBlueprint(projectId, blueprint, summary, rounds) {
+    var latest = queryOne('SELECT version FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    var newVersion = (latest ? latest.version : 0) + 1;
+    if (newVersion > 3) dbRun('DELETE FROM story_blueprints WHERE project_id=? AND version <= ?', [projectId, newVersion - 3]);
+    dbRun('INSERT INTO story_blueprints (project_id, version, blueprint_json, compression_summary, compressed_rounds) VALUES (?,?,?,?,?)',
+        [projectId, newVersion, JSON.stringify(blueprint), summary, rounds]);
+    saveDB();
+    var proj = queryOne('SELECT user_id FROM writing_projects WHERE id=?', [projectId]);
+    if (proj) { var ecfg = _getRetrievalConfig(proj.user_id); if (ecfg) _enqueueEmbedding(projectId, 'blueprint', 'latest', JSON.stringify(blueprint), JSON.stringify({ version: newVersion }), ecfg); }
+    console.log('[Compress] 蓝图已保存 v' + newVersion + ': ' + summary);
+}
+
+function _emptyBlueprintObj() {
+    return {
+        core: { premise: '', genre: '', tone: '', target_platform: '', target_audience: '' },
+        protagonist: { name: '', arc_summary: '', current_stage: '', key_traits: [], core_conflict: '' },
+        world: { power_system: '', era_summary: '', key_factions: [], pending_questions: [] },
+        plot: { main_thread: '', sub_threads: [], foreshadowing: [] },
+        outline_progress: { current_volume: 1, current_chapter: 1, chapters_written: 0, next_chapter_hook: '' }
+    };
+}
+
+// ===== 组装层：上下文拼接 =====
+// 将蓝图+项目摘要+RAG检索结果组装为系统提示词追加内容
+async function _buildAssembledContext(projectId, userId, userQuery, mode) {
+    var parts = [];
+    // 1. 项目进度摘要（始终包含）
+    var summary = _buildProjectSummary(projectId, userId);
+    if (summary) parts.push(summary);
+    // 2. 故事蓝图摘要
+    var bp = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    if (bp) {
+        var blueprint = safeJsonParse(bp.blueprint_json, {});
+        var bpSummary = _buildBlueprintSummary(blueprint);
+        if (bpSummary) parts.push('## 故事蓝图\n' + bpSummary);
+    }
+    // 3. RAG检索（日常模式轻量，检查点模式全量）
+    var searchK = mode === 'checkpoint' ? 8 : 3;
+    if (userQuery && userQuery.length > 2) {
+        var retrievalCfg = _getRetrievalConfig(userId);
+        if (retrievalCfg) {
+            try {
+                var searchResults = await _searchWithFallback(projectId, userQuery, searchK, null, retrievalCfg);
+                if (searchResults.results && searchResults.results.length > 0) {
+                    var ragText = '## 相关上下文参考\n';
+                    searchResults.results.forEach(function(r) {
+                        ragText += '- [' + r.source_type + '] ' + r.content.substring(0, 150) + '\n';
+                    });
+                    if (ragText.length > 30) parts.push(ragText);
+                }
+            } catch(e) { console.log('[Assembly] RAG检索跳过:', e.message); }
+        }
+    }
+    // 4. 当前引导方案（如有）
+    var proj = queryOne('SELECT metadata FROM writing_projects WHERE id=?', [projectId]);
+    if (proj) {
+        var meta = safeJsonParse(proj.metadata, {});
+        if (meta.approach) parts.push('## 当前引导方案\n使用「' + meta.approach + '」模式');
+    }
+    return parts.join('\n\n');
+}
+
+// 蓝图 → 可读摘要文本
+function _buildBlueprintSummary(blueprint) {
+    if (!blueprint || !blueprint.core) return '';
+    var lines = [];
+    var c = blueprint.core;
+    if (c.premise) lines.push('- 梗概：' + c.premise);
+    if (c.genre) lines.push('- 题材：' + c.genre + (c.tone ? '（' + c.tone + '）' : ''));
+    if (c.target_platform) lines.push('- 目标平台：' + c.target_platform);
+    var p = blueprint.protagonist;
+    if (p && p.name) lines.push('- 主角：' + p.name + (p.current_stage ? '（' + p.current_stage + '）' : '') + (p.core_conflict ? ' → ' + p.core_conflict : ''));
+    var w = blueprint.world;
+    if (w && w.power_system) lines.push('- 力量体系：' + w.power_system);
+    if (w && w.key_factions && w.key_factions.length) lines.push('- 势力：' + w.key_factions.join('、'));
+    var pl = blueprint.plot;
+    if (pl && pl.main_thread) lines.push('- 主线：' + pl.main_thread);
+    if (pl && pl.foreshadowing && pl.foreshadowing.length) lines.push('- 伏笔：' + pl.foreshadowing.map(function(f){ return f.name; }).join('、'));
+    return lines.length > 0 ? lines.join('\n') : '';
+}
+
 function callOutlineLLM(projectId, userId, systemPrompt, userContent, agentType, req, callback, streamCallback, tools, skipDbSave) {
     var llmAgent = queryOne('SELECT * FROM agents WHERE user_id=? ORDER BY id LIMIT 1', [userId]);
     if (!llmAgent || !llmAgent.api_key) { callback({ error:'请先在智能体管理页面配置至少一个AI模型' }); return; }
@@ -3170,6 +3895,15 @@ app.put('/api/writing-projects/:id/agent-api-config', auth, (req, res) => {
     db.run('CREATE TABLE IF NOT EXISTS agent_conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, agent_type TEXT NOT NULL, role TEXT NOT NULL, content TEXT DEFAULT \'\', thinking TEXT DEFAULT \'\', tool_calls TEXT DEFAULT \'\', metadata TEXT DEFAULT \'{"type":"chat"}\', token_used INTEGER DEFAULT 0, status TEXT DEFAULT \'done\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS token_usage_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, agent_type TEXT, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cost_input REAL DEFAULT 0.0, cost_output REAL DEFAULT 0.0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS token_pricing_config (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, model_name TEXT NOT NULL, input_price_per_million REAL DEFAULT 0.0, output_price_per_million REAL DEFAULT 0.0, cache_hit_price_per_million REAL DEFAULT 0.0, discount_rate REAL DEFAULT 1.0, discount_valid_until TEXT DEFAULT \'\', is_default INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    // 用户级配置（key-value，按user_id隔离）
+    db.run('CREATE TABLE IF NOT EXISTS user_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT DEFAULT \'\', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, key))');
+    // RAG分块存储（含embedding向量BLOB，按project_id隔离）
+    db.run('CREATE TABLE IF NOT EXISTS rag_chunks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, source_type TEXT NOT NULL, source_id TEXT NOT NULL, content_text TEXT DEFAULT \'\', metadata_json TEXT DEFAULT \'{}\', embedding_model TEXT DEFAULT \'\', embedding_dim INTEGER DEFAULT 0, embedding_blob BLOB, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(project_id, source_type, source_id))');
+    db.run('CREATE INDEX IF NOT EXISTS idx_rag_chunks_project ON rag_chunks(project_id)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_rag_chunks_type ON rag_chunks(project_id, source_type)');
+    // 故事蓝图版本历史
+    db.run('CREATE TABLE IF NOT EXISTS story_blueprints (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, version INTEGER DEFAULT 1, blueprint_json TEXT DEFAULT \'{}\', compression_summary TEXT DEFAULT \'\', compressed_rounds TEXT DEFAULT \'\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_blueprints_project ON story_blueprints(project_id, version DESC)');
 
     // 默认token费用配置（DeepSeek V4 Pro 2026-05-31后永久降价至2.5折价格）
     var hasPricing = queryOne('SELECT id FROM token_pricing_config WHERE is_default=1 LIMIT 1');
@@ -3191,6 +3925,11 @@ app.put('/api/writing-projects/:id/agent-api-config', auth, (req, res) => {
     try { db.run('ALTER TABLE canvas_versions ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1'); } catch(e) {}
     try { db.run('ALTER TABLE users ADD COLUMN session_token TEXT DEFAULT \'\''); } catch(e) {}
     try { db.run('ALTER TABLE assets ADD COLUMN md5 TEXT DEFAULT \'\''); } catch(e) {}
+    // 阶段一：写作模块骨架——项目metadata + 检索配置 + 用户设置
+    try { db.run('ALTER TABLE writing_projects ADD COLUMN metadata TEXT DEFAULT \'{}\''); } catch(e) {}
+    try { db.run('ALTER TABLE writing_agent_config ADD COLUMN retrieval_model TEXT DEFAULT \'\''); } catch(e) {}
+    try { db.run('ALTER TABLE writing_agent_config ADD COLUMN retrieval_endpoint TEXT DEFAULT \'\''); } catch(e) {}
+    try { db.run('ALTER TABLE writing_agent_config ADD COLUMN retrieval_api_key TEXT DEFAULT \'\''); } catch(e) {}
     // pinned_snapshot 需要重建（约束变更）
     try { db.run('DROP TABLE IF EXISTS pinned_snapshot_old'); } catch(e) {}
     try {
@@ -3262,6 +4001,13 @@ app.put('/api/writing-projects/:id/agent-api-config', auth, (req, res) => {
         saveDB();
         console.log('  🔐 JWT_SECRET 已迁移到数据库（兼容旧Token）');
     }
+
+    // 初始化HNSW向量索引（从DB加载已有chunks）
+    try {
+        var allChunks = queryAll('SELECT source_type, source_id, embedding_blob, embedding_dim, project_id FROM rag_chunks WHERE embedding_blob IS NOT NULL');
+        HNSW.init(allChunks || []);
+        console.log('  🧠 HNSW索引已初始化 节点数=' + HNSW.stats().nodeCount);
+    } catch(e) { console.log('  ⚠️ HNSW初始化失败:', e.message); }
 
     app.listen(PORT, () => {
         console.log('\n  🎨 无限画布 本地后端已启动');

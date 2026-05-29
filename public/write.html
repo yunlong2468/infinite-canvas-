@@ -152,6 +152,11 @@ body.zen-mode #zenExit { display:block; }
 .ch-input textarea:hover::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.15); }
 .ch-input textarea::-webkit-scrollbar-corner { display:none; }
 .ch-input button { padding:4px 12px; border-radius:14px; border:none; background:var(--accent); color:#fff; cursor:pointer; font-size:13px; font-family:inherit; }
+.ctx-ring-wrap { position:relative; display:flex; align-items:center; cursor:pointer; flex-shrink:0; }
+.ctx-ring-svg { display:block; transition:transform 0.15s; }
+.ctx-ring-wrap:hover .ctx-ring-svg { transform:scale(1.15); }
+.ctx-ring-tip { display:none; position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.85); color:#fff; font-size:10px; padding:2px 8px; border-radius:4px; white-space:nowrap; pointer-events:none; }
+.ctx-ring-wrap:hover .ctx-ring-tip { display:block; }
 .unread-badge {
   position:absolute; bottom:calc(100% + 4px); right:12px; background:var(--accent);
   color:#fff; border-radius:14px; padding:4px 10px; font-size:12px; cursor:pointer;
@@ -167,6 +172,37 @@ body.zen-mode #zenExit { display:block; }
 .mention-dropdown.show { display:block; }
 .mention-dropdown .m-item { padding:7px 10px; cursor:pointer; font-size:12px; display:flex; align-items:center; gap:6px; transition:background 0.08s; }
 .mention-dropdown .m-item:hover { background:rgba(5,163,197,0.12); color:var(--text); }
+
+/* ===== 故事蓝图面板 ===== */
+.bp-content { padding:12px; overflow-y:auto; }
+.bp-card { margin-bottom:8px; border:0.5px solid var(--border); border-radius:8px; overflow:hidden; }
+.bp-card-hdr { padding:8px 12px; background:rgba(255,255,255,0.03); font-size:13px; color:#fff; cursor:pointer; user-select:none; }
+.bp-card-hdr:hover { background:rgba(255,255,255,0.06); }
+.bp-card-body { padding:8px 12px; }
+.bp-row { display:flex; padding:3px 0; font-size:12px; border-bottom:0.5px solid rgba(255,255,255,0.03); }
+.bp-label { color:var(--text2); min-width:70px; flex-shrink:0; }
+.bp-val { color:#d4d4d4; }
+.bp-empty { font-size:11px; color:var(--text2); font-style:italic; padding:4px 0; }
+.bp-version-bar { text-align:center; padding:8px; font-size:11px; color:var(--accent); cursor:pointer; border:0.5px dashed var(--border); border-radius:8px; margin-top:8px; }
+.bp-version-bar:hover { background:rgba(5,163,197,0.06); }
+.bp-version-list { max-height:300px; overflow-y:auto; }
+.bp-version-row { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:0.5px solid rgba(255,255,255,0.04); font-size:12px; }
+.bp-ver-num { color:var(--accent); margin-right:6px; }
+.bp-ver-summary { color:var(--text2); }
+.bp-ver-time { color:var(--text2); font-size:10px; }
+.bp-ver-current { font-size:10px; color:var(--accent); }
+.bp-ver-rollback { font-size:10px; padding:2px 6px; background:rgba(245,63,63,0.1); color:#F53F3F; border:0.5px solid rgba(245,63,63,0.2); border-radius:4px; cursor:pointer; }
+
+/* ===== 检查点卡片 ===== */
+.cp-card { margin:8px 0; border:0.5px solid rgba(245,166,35,0.3); border-radius:8px; background:rgba(245,166,35,0.06); overflow:hidden; }
+.cp-card.cp-locked { border-color:var(--border); background:rgba(255,255,255,0.02); }
+.cp-hdr { padding:6px 12px; font-size:12px; color:#F5A623; display:flex; justify-content:space-between; align-items:center; }
+.cp-locked .cp-hdr { color:var(--text2); }
+.cp-badge { font-size:10px; color:#22C55E; background:rgba(34,197,94,0.1); padding:1px 6px; border-radius:8px; }
+.cp-body { padding:6px 12px 10px; }
+.cp-row { display:flex; padding:2px 0; font-size:11px; }
+.cp-label { color:var(--text2); min-width:60px; flex-shrink:0; }
+.cp-val { color:#d4d4d4; }
 
 /* ===== Messages ===== */
 .msg { display:flex; gap:6px; max-width:100%; animation:fadeIn 0.2s; }
@@ -300,6 +336,17 @@ select:focus option:checked {
 .opt-btn.gone { opacity:0.3; pointer-events:none; border-color:var(--border); color:var(--text2); background:rgba(255,255,255,0.03); }
 .opt-btn.picked { opacity:1; background:var(--accent); color:#fff; pointer-events:none; }
 
+/* 多选复选框 */
+.opt-cb { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border-radius:14px; border:0.5px solid var(--border); color:var(--text2); font-size:12px; cursor:pointer; transition:all 0.15s; }
+.opt-cb:hover { border-color:var(--accent); color:#fff; background:rgba(5,163,197,0.06); }
+.opt-cb input[type="checkbox"] { display:none; }
+.opt-cb input[type="checkbox"]:checked + span { color:#fff; }
+.opt-cb:has(input:checked) { border-color:var(--accent); background:rgba(5,163,197,0.12); }
+.opt-cb .opt-custom-inp { width:100px; padding:2px 6px; background:rgba(255,255,255,0.06); border:0.5px solid var(--border); border-radius:4px; color:#fff; font-size:11px; font-family:inherit; outline:none; }
+.opt-cb .opt-custom-inp:focus { border-color:var(--accent); }
+.opt-submit-btn { padding:4px 16px; border-radius:14px; border:none; background:var(--accent); color:#fff; cursor:pointer; font-size:12px; font-family:inherit; margin-top:4px; }
+.opt-submit-btn:disabled { opacity:0.35; cursor:not-allowed; }
+
 /* ===== 用户消息右键菜单 ===== */
 .msg.user-msg .bubble { position:relative; cursor:context-menu; }
 .msg.user-msg .bubble::after {
@@ -352,6 +399,34 @@ select:focus option:checked {
 #devLogBody .dl-line.dl-client .dl-tag { color:#7C3AED; }
 #devLogBody .dl-line.dl-highlight { background:rgba(245,166,35,0.15); }
 
+/* ===== 引导问卷 ===== */
+#onboardingOverlay { position:fixed; inset:0; z-index:800; pointer-events:none; display:flex; align-items:center; justify-content:center; }
+#onboardingOverlay > * { pointer-events:auto; }
+#onboardingMask { position:absolute; inset:0; background:rgba(0,0,0,0.5); backdrop-filter:blur(2px); opacity:1; transition:opacity 0.4s; }
+#onboardingMask.fade-out { opacity:0; }
+#onboardingCard { position:relative; background:var(--panel); border:0.5px solid var(--border); border-radius:12px; padding:20px; max-width:420px; width:calc(100% - 32px); box-shadow:0 8px 32px rgba(0,0,0,0.4); transition:transform 0.5s cubic-bezier(0.34,1.56,0.64,1), opacity 0.3s; }
+#onboardingCard.shrink { transform:scale(0.3); opacity:0; }
+#onboardingCard h3 { font-size:15px; color:#fff; margin:0 0 4px 0; }
+#onboardingCard .ob-desc { font-size:11px; color:var(--text2); margin-bottom:14px; }
+.ob-step { display:none; }
+.ob-step.active { display:block; }
+.ob-step .ob-label { font-size:13px; color:#fff; margin-bottom:8px; }
+.ob-options { display:flex; flex-wrap:wrap; gap:6px; }
+.ob-opt { padding:8px 14px; border:0.5px solid var(--border); border-radius:8px; cursor:pointer; font-size:12px; color:var(--text2); background:rgba(255,255,255,0.04); transition:all 0.2s; }
+.ob-opt:hover { color:#fff; border-color:var(--accent); background:rgba(5,163,197,0.1); }
+.ob-opt.selected { color:#fff; border-color:var(--accent); background:rgba(5,163,197,0.2); }
+.ob-nav { display:flex; justify-content:space-between; margin-top:16px; }
+.ob-nav button { padding:6px 16px; border-radius:6px; border:0.5px solid var(--border); background:var(--accent); color:#fff; font-size:12px; cursor:pointer; font-family:inherit; }
+.ob-nav button:disabled { opacity:0.4; cursor:not-allowed; }
+.ob-nav .ob-back { background:transparent; color:var(--text2); }
+#obSkip { position:absolute; top:8px; right:12px; font-size:11px; color:var(--text2); cursor:pointer; z-index:101; }
+#obSkip:hover { color:#fff; }
+#obRetakeBtn { display:none; position:absolute; top:8px; right:12px; font-size:11px; color:var(--text2); cursor:pointer; z-index:101; }
+#obRetakeBtn:hover { color:#fff; }
+#obLoading { display:none; text-align:center; padding:20px; }
+#obLoading .spinner { width:24px; height:24px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto 8px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
 /* ===== Mobile (<768px) ===== */
 @media (max-width:767px) {
   :root { --act-w:48px; }
@@ -403,6 +478,58 @@ select:focus option:checked {
   </div>
   <div id="devLogBody"></div>
 </div>
+
+<!-- Onboarding Questionnaire -->
+<div id="onboardingOverlay" style="display:none;">
+  <div id="onboardingMask"></div>
+  <div id="onboardingCard">
+    <div id="obSkip" title="跳过问卷，使用默认引导方案">跳过 ▶</div>
+    <div id="obLoading"><div class="spinner"></div><div style="font-size:12px;color:var(--text2);">正在为你匹配创作方案...</div></div>
+    <div class="ob-step active" data-step="1">
+      <h3>创作引导</h3><div class="ob-desc">先了解一下你的写作背景（1/4）</div>
+      <div class="ob-label">你的写作经验？</div>
+      <div class="ob-options" data-key="experience">
+        <div class="ob-opt" data-val="newbie">新手-刚开始接触写作</div>
+        <div class="ob-opt" data-val="some">有经验-写过但不多</div>
+        <div class="ob-opt" data-val="veteran">老手-写过不少作品</div>
+      </div>
+    </div>
+    <div class="ob-step" data-step="2">
+      <h3>创作引导</h3><div class="ob-desc">了解一下你的写作经历（2/4）</div>
+      <div class="ob-label">你写了多久了？</div>
+      <div class="ob-options" data-key="duration">
+        <div class="ob-opt" data-val="just_started">刚开始</div>
+        <div class="ob-opt" data-val="half_year">半年左右</div>
+        <div class="ob-opt" data-val="1_3_years">1-3年</div>
+        <div class="ob-opt" data-val="3_plus_years">3年以上</div>
+      </div>
+      <div class="ob-nav"><button class="ob-back" onclick="OB.prev()">← 上一题</button></div>
+    </div>
+    <div class="ob-step" data-step="3">
+      <h3>创作引导</h3><div class="ob-desc">了解你的目标平台（3/4）</div>
+      <div class="ob-label">你倾向在哪个平台发布？</div>
+      <div class="ob-options" data-key="platform">
+        <div class="ob-opt" data-val="fanqie">番茄小说</div>
+        <div class="ob-opt" data-val="qidian">起点中文网</div>
+        <div class="ob-opt" data-val="feilu">飞卢小说网</div>
+        <div class="ob-opt" data-val="any">不限平台</div>
+        <div class="ob-opt" data-val="other">其他</div>
+      </div>
+      <div class="ob-nav"><button class="ob-back" onclick="OB.prev()">← 上一题</button></div>
+    </div>
+    <div class="ob-step" data-step="4">
+      <h3>创作引导</h3><div class="ob-desc">最后一步（4/4）</div>
+      <div class="ob-label">你现在处于什么状态？</div>
+      <div class="ob-options" data-key="status">
+        <div class="ob-opt" data-val="has_idea">有灵感-心里有大致方向</div>
+        <div class="ob-opt" data-val="blank">完全空白-不知道写什么</div>
+      </div>
+      <div class="ob-nav"><button class="ob-back" onclick="OB.prev()">← 上一题</button><button id="obSubmit" disabled onclick="OB.submit()">✓ 开始创作</button></div>
+    </div>
+  </div>
+</div>
+<!-- 开发者重填入口 -->
+<div id="obRetakeBtn" onclick="OB.retake()" title="重填引导问卷">🔄 重填问卷</div>
 
 <!-- Toast -->
 <div id="_toast" style="position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999;padding:8px 20px;border-radius:8px;font-size:14px;font-family:inherit;pointer-events:none;opacity:0;transition:opacity 0.3s;"></div>
