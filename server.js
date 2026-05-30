@@ -1701,6 +1701,122 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
                     resolve({ result: skillContent, thinking: optResult.thinking || '', summary: '已自动创建技能「'+skillName+'」并加载'+(toolCount>0?'（注册了'+toolCount+'个工具）':'') });
                 }, streamCallback, null, true);
             }
+        } else if (tl.indexOf('plan_volume_blueprint') >= 0 || tl.indexOf('volume_blueprint') >= 0) {
+            // 阶段四：结构化保存卷蓝图
+            var bpJsonStr = args.blueprint_json || args.json || '{}';
+            try { JSON.parse(bpJsonStr); } catch(e) { resolve({ error: '卷蓝图JSON解析失败: '+e.message, summary: 'JSON格式错误' }); return; }
+            broadcastDevLog('info','server','[Stage4] plan_volume_blueprint 保存开始 | Saving volume blueprint');
+            // 更新 story_blueprints 的 plot 字段
+            var existingBp = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+            var bp = existingBp ? safeJsonParse(existingBp.blueprint_json, _emptyBlueprintObj()) : _emptyBlueprintObj();
+            try {
+                var vb = JSON.parse(bpJsonStr);
+                bp.plot.main_thread = vb.总脉络 || '';
+                if (vb.卷蓝图) bp.plot.sub_threads = vb.卷蓝图.map(function(v){ return { name: v.卷名, status: 'planned', chapters: v.总章数, theme: v.主题 }; });
+                _saveCompressedBlueprint(projectId, bp, '卷蓝图规划', '');
+                broadcastDevLog('info','server','[Stage4] 卷蓝图已保存 卷数='+(vb.卷蓝图||[]).length+' | Volume blueprint saved volumes='+(vb.卷蓝图||[]).length);
+                resolve({ result: bpJsonStr, summary: '卷蓝图已保存，共'+(vb.卷蓝图||[]).length+'卷' });
+            } catch(e) {
+                broadcastDevLog('error','server','[Stage4] 卷蓝图保存失败: '+e.message+' | Save failed');
+                resolve({ error: '保存失败: '+e.message, summary: '卷蓝图保存失败' });
+            }
+        } else if (tl.indexOf('generate_outline_multi') >= 0 || (tl.indexOf('outline') >= 0 && tl.indexOf('multi') >= 0)) {
+            // 阶段五：多智能体并行大纲生成
+            broadcastDevLog('info','server','[Stage5] generate_outline_multi 开始 | Starting multi-agent outline generation');
+            // 前置条件检查
+            var stageCheck = _checkStagePrerequisites(projectId, 'stage5');
+            if (!stageCheck.passed) {
+                broadcastDevLog('warn','server','[Stage5] 前置条件不满足: '+stageCheck.error+' | Prerequisites not met');
+                resolve({ error: stageCheck.error, summary: '前置条件不满足：'+stageCheck.missing.join('、') });
+                return;
+            }
+            // 获取卷蓝图
+            var existingBp5 = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+            if (!existingBp5) { resolve({ error: '缺少卷蓝图，请先完成阶段四', summary: '缺少卷蓝图' }); return; }
+            var bpData = safeJsonParse(existingBp5.blueprint_json, {});
+            var subThreads = bpData.plot ? (bpData.plot.sub_threads || []) : [];
+            if (!subThreads.length) {
+                // 没有分卷信息，降级为单agent模式
+                broadcastDevLog('warn','server','[Stage5] 无分卷信息，降级为单卷生成 | No volume data, falling back to single volume');
+                var proj5 = queryOne('SELECT * FROM writing_projects WHERE id=?', [projectId]);
+                var ctx = '项目：'+proj5.title+'\n类型：'+proj5.genre+' '+proj5.sub_genre+'\n请生成完整大纲。';
+                callOutlineLLM(projectId, userId, OUTLINER_SYSTEM, ctx, 'outliner', null, function(result) {
+                    if (result.error) { resolve({ error: result.error, summary: '大纲生成失败' }); return; }
+                    resolve({ result: result.content, summary: '大纲已生成（单卷模式）' });
+                }, streamCallback, null, true);
+                return;
+            }
+            // 多卷并行生成
+            var sharedContext = _buildSharedOutlineContext(projectId) + '\n请根据卷蓝图为每一卷生成详细大纲。';
+            broadcastDevLog('info','server','[Stage5] 共享上下文已组装 len='+sharedContext.length+' | Shared context assembled');
+            // 简化版：逐卷顺序生成（避免并行复杂度导致的不稳定）
+            var volumes = subThreads;
+            var allResults = [];
+            var totalChapters = 0;
+            var savedVolIds = [];
+
+            async function generateVolumesSequentially() {
+                for (var vi = 0; vi < volumes.length; vi++) {
+                    var vol = volumes[vi];
+                    broadcastDevLog('info','server','[Stage5] 生成卷'+(vi+1)+'/'+volumes.length+' '+vol.name+' | Generating volume '+(vi+1)+'/'+volumes.length);
+                    if (sseRes && !sseRes.destroyed) {
+                        sseRes.write('data: '+JSON.stringify({type:'outline_progress',completed:vi,total:volumes.length,current:vol.name})+'\n\n');
+                    }
+                    var volCtx = sharedContext + '\n\n## 当前卷\n卷名：'+vol.name+'\n主题：'+(vol.theme||'')+'\n章节数：'+(vol.chapters||'未知')+'\n请为这一卷生成详细大纲（包含所有章的关键事件和详细描述）。';
+                    var volResult = await new Promise(function(resolveVol) {
+                        callOutlineLLM(projectId, userId, OUTLINER_VOLUME_SYSTEM, volCtx, 'outliner_vol'+(vi+1), null, function(r) {
+                            if (r.error) {
+                                broadcastDevLog('warn','server','[Stage5] 卷'+(vi+1)+'生成失败: '+r.error+' | Volume generation failed');
+                                resolveVol({ error: r.error, name: vol.name });
+                                return;
+                            }
+                            // 解析并写入数据库
+                            try {
+                                var clean = (r.content||'').replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();
+                                var data = JSON.parse(clean);
+                                var vid = dbRun('INSERT INTO writing_volumes (project_id, volume_no, title, summary, status) VALUES (?,?,?,?,?)',
+                                    [projectId, vi+1, data.卷名||vol.name, data.卷概要||'', 'draft']);
+                                savedVolIds.push(vid);
+                                var chapCount = 0;
+                                var tlCount = 0;
+                                (data.章||[]).forEach(function(chap, ci) {
+                                    var cid = dbRun('INSERT INTO writing_chapters (project_id, volume_id, chapter_no, title, content_text, status) VALUES (?,?,?,?,?,?)',
+                                        [projectId, vid, ci+1, chap.章名||('第'+(ci+1)+'章'), chap.概要||'', 'draft']);
+                                    chapCount++;
+                                    (chap.关键事件||[]).forEach(function(evt) {
+                                        var ay = (data.时间锚点&&data.时间锚点.绝对年份!=null) ? data.时间锚点.绝对年份 : null;
+                                        dbRun('INSERT INTO plot_timeline_events (project_id, event_name, summary, character_ids, chapter_id, absolute_year, era_name, faction_calendars, event_type) VALUES (?,?,?,?,?,?,?,?,?)',
+                                            [projectId, evt.事件名||'', evt.详细描述||'', JSON.stringify(evt.涉及角色||[]), cid, ay,
+                                             data.时间锚点?data.时间锚点.纪元名称:'', data.时间锚点?JSON.stringify(data.时间锚点.势力历法||{}):'{}',
+                                             evt.事件类型||'minor']);
+                                        tlCount++;
+                                    });
+                                });
+                                saveDB();
+                                totalChapters += chapCount;
+                                broadcastDevLog('info','server','[Stage5] 卷'+(vi+1)+'完成 章='+chapCount+' 事件='+tlCount+' | Volume complete ch='+chapCount+' events='+tlCount);
+                                resolveVol({ name: vol.name, chapters: chapCount, events: tlCount, ok: true });
+                            } catch(e) {
+                                broadcastDevLog('warn','server','[Stage5] 卷'+(vi+1)+'解析失败: '+e.message+' | Parse failed');
+                                resolveVol({ error: e.message, name: vol.name, ok: false });
+                            }
+                        }, streamCallback, null, true);
+                    });
+                    allResults.push(volResult);
+                }
+                // 完成
+                var okCount = allResults.filter(function(r){ return r.ok; }).length;
+                var summary = '已生成 '+okCount+'/'+volumes.length+' 卷大纲，共 '+totalChapters+' 章';
+                if (sseRes && !sseRes.destroyed) {
+                    sseRes.write('data: '+JSON.stringify({type:'outline_draft_ready',projectId:projectId,volumes:savedVolIds.map(function(id,i){return{id:id,title:volumes[i].name,chapterCount:allResults[i].chapters||0};}),totalChapters:totalChapters})+'\n\n');
+                }
+                broadcastDevLog('info','server','[Stage5] 全部完成 '+summary+' | All complete');
+                resolve({ result: JSON.stringify(allResults), summary: summary, outlineDraft: true, skipDbSave: true });
+            }
+            generateVolumesSequentially().catch(function(err) {
+                broadcastDevLog('error','server','[Stage5] 生成过程异常: '+err.message+' | Unexpected error');
+                resolve({ error: err.message, summary: '大纲生成异常' });
+            });
         } else {
             // 动态工具：从user_tools查找并执行（以技能内容为system prompt调用LLM）
             var userTool = queryOne('SELECT ut.*, os.content as skill_content FROM user_tools ut INNER JOIN optimized_skills os ON ut.skill_id=os.id AND os.is_enabled=1 WHERE ut.name=? AND ut.user_id=? AND ut.is_enabled=1', [toolName, userId]);
@@ -2617,6 +2733,7 @@ app.post('/api/writing-projects/:id/backfill-world', auth, (req, res) => {
 
 // ==================== 大纲Agent ====================
 var OUTLINER_SYSTEM = loadPrompt('outliner.md');
+var OUTLINER_VOLUME_SYSTEM = loadPrompt('outliner_volume.md'); // 阶段五：单卷大纲Agent
 
 // streamCallback: 流式回调 function({type:'thinking'|'content', delta:'...'})，null=非流式
 // tools: 工具定义数组(用于request_tool机制)，null=不传工具
@@ -2913,7 +3030,48 @@ function _emptyBlueprintObj() {
     };
 }
 
-// ===== 阶段门控：检查各阶段前置条件 =====
+// ===== 大纲生成辅助：构建共享上下文 =====
+// ===== 大纲生成辅助：构建共享上下文 =====
+function _buildSharedOutlineContext(projectId) {
+    var parts = [];
+    var proj = queryOne('SELECT title, genre, sub_genre, target_words FROM writing_projects WHERE id=?', [projectId]);
+    if (proj) {
+        parts.push('## 项目信息\n- 书名：'+proj.title+'\n- 类型：'+proj.genre+' '+proj.sub_genre+'\n- 目标字数：'+(proj.target_words||'未定')+'字');
+    }
+    var entities = queryAll('SELECT name, type, description FROM world_entities WHERE project_id=? ORDER BY id', [projectId]);
+    if (entities.length > 0) {
+        var txt = '## 世界观设定\n';
+        var typeGroups = {};
+        entities.forEach(function(e) { var t = e.type||'其他'; if (!typeGroups[t]) typeGroups[t] = []; typeGroups[t].push(e.name+(e.description?':'+e.description.substring(0,80):'')); });
+        Object.keys(typeGroups).forEach(function(t) { txt += '- '+t+'：'+typeGroups[t].slice(0,10).join('、')+'\n'; });
+        var rels = queryAll('SELECT fe.name as fn, te.name as tn, wr.relation_type FROM world_relations wr LEFT JOIN world_entities fe ON wr.from_entity_id=fe.id LEFT JOIN world_entities te ON wr.to_entity_id=te.id WHERE wr.project_id=?', [projectId]);
+        if (rels.length > 0) { txt += '- 关系：'; rels.slice(0,8).forEach(function(r){ txt += (r.fn||'?')+'→'+(r.relation_type||'关联')+'→'+(r.tn||'?')+'；'; }); txt += '\n'; }
+        parts.push(txt);
+    }
+    var chars = queryAll('SELECT name, is_protagonist, profile_json FROM writing_characters WHERE project_id=?', [projectId]);
+    if (chars.length > 0) {
+        var ct = '## 角色阵容\n';
+        chars.forEach(function(c) {
+            var pf = {}; try { pf = JSON.parse(c.profile_json||'{}'); } catch(e) {}
+            ct += '- '+(c.is_protagonist===1?'★主角':'角色')+'：'+c.name;
+            if (pf.性格) ct += '（性格：'+pf.性格.substring(0,40)+'）';
+            if (pf.能力) ct += ' 能力：'+pf.能力.substring(0,40);
+            if (pf.金手指) ct += ' 金手指：'+pf.金手指.substring(0,50);
+            ct += '\n';
+        });
+        parts.push(ct);
+    }
+    var bp = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    if (bp) {
+        var bpj = safeJsonParse(bp.blueprint_json, {});
+        if (bpj.plot && bpj.plot.main_thread) {
+            parts.push('## 卷蓝图总脉络\n'+bpj.plot.main_thread);
+        }
+    }
+    var result = parts.join('\n\n');
+    broadcastDevLog('info','server','[Stage5] 共享上下文已构建 len='+result.length+' | Shared context built');
+    return result;
+}
 function _checkStagePrerequisites(projectId, stage) {
     var result = { passed: true, missing: [], details: {} };
     var we = queryOne('SELECT COUNT(*) as c FROM world_entities WHERE project_id=?', [projectId]);
