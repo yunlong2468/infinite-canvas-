@@ -6,9 +6,10 @@
 
 | 层 | 技术 |
 |---|------|
-| 后端 | Node.js + Express (~6000行) |
+| 后端 | Node.js + Express (~4800行) |
 | 数据库 | SQL.js (SQLite 文件持久化) |
-| 前端 | 原生 HTML/CSS/JS (~7000行) |
+| 前端 | 原生 HTML/CSS/JS (~4600行) |
+| 提示词 | 10个独立 .md 文件（prompts/ 目录） |
 | 认证 | JWT + session_token 多设备互踢 |
 | 实时 | SSE (Server-Sent Events) 流式推送 |
 | LLM | OpenAI 兼容 API (DeepSeek/OpenAI/自定义) |
@@ -186,19 +187,38 @@ node server.js
 - [x] `JWT_SECRET` 支持环境变量覆盖
 
 ### 写作模块（AI 辅助小说创作）
+
+**五阶段工作流**：需求采访 → 世界观构建 → 角色设计 → 卷蓝图规划 → 大纲生成
+
+- [x] 五阶段编排师（每次只问一个问题 / 不能跳步 / 起承转合 / 按钮即引导）
+- [x] 10个系统提示词外置（prompts/*.md 独立文件，支持热更新）
+- [x] 世界观设计Agent（design_worldview：文档生成 + 实体关系自动提取）
+- [x] 世界观结构化（world_entities 层级树 + world_relations 关系网）
+- [x] 角色设计Agent（金手指 / 动机 / 命运弧线 / is_protagonist / 关系网自动提取）
+- [x] 随机命名表（250姓氏 + 370名字用字，Python脚本生成）
+- [x] 卷蓝图规划（plan_volume_blueprint：每卷独立起承转合分配 + 跨卷伏笔）
+- [x] 多智能体大纲生成（generate_outline_multi：逐卷Agent并行 + 时间线事件自动提取）
+- [x] 主角确认流程（智能体提议→选项按钮→is_protagonist=1→蓝图同步）
+- [x] tool_request 用户确认（子智能体请求工具时暂停流式、确认气泡）
+- [x] 浮动画布悬浮窗（可拖动 / 可缩放 / 右下角调大小）
+- [x] 世界观层级树🌍（递归树形 + 折叠展开 + 曲线连线）
+- [x] 角色星座图👤（主角居中 + 关联环绕 + 孤立外推 + 关系线颜色编码）
+- [x] 时间线视图📖（水平轴按absolute_year排序 + 多纪年标签 + 事件卡片 + 伏笔标记）
+- [x] 大纲预览📋（卷折叠 / 章概要 / 批注 / 单卷重生成 / 确认推翻）
 - [x] 多智能体协作：调配师 + 大纲师 + 角色设计 + 爬虫 + 动态技能工具
 - [x] 分卷分章大纲生成与管理
 - [x] 角色档案自动生成（LLM JSON 提取 + DB 持久化）
 - [x] 角色关系图谱 + 伏笔追踪
 - [x] 章节编辑器（自动保存 + 版本快照）
 - [x] 智能体流式对话 + 思考计时器 + 牛马碎碎念轮播
-- [x] 平台小说爬取（番茄/起点/晋江/纵横等 11 个平台）
+- [x] 平台小说爬取（番茄，CDP模式）
 - [x] Scrapling CDP 浏览器自动化（绕过字节跳动反爬 SDK）
 - [x] PUA 自定义字体字形解码（破解字体反爬乱码）
 - [x] 人机验证码浮动通知 + 自动等待
 - [x] 撤销恢复（撤回对话同步回滚章/卷/角色）
 - [x] LLM 多轮工具调用 + 子智能体 request_tool 递归
 - [x] 开发者日志面板（前后端console拦截+SSE实时推送+等级过滤+关键字搜索+面板拖拽调整高度）
+- [x] 双语调试日志（中文 | English 格式，全链路覆盖）
 - [x] 双气泡去重（流式缓冲残留检测 + DB/内存双重去重 + skipDbSave 源头防重复）
 - [x] 引导问卷（4题写作背景→LLM分析→方案匹配A1/A2/B1→问候语注入+果冻收缩动画）
 - [x] 多选按钮（非平台选项多选+自定义输入必填校验+手动提交）
@@ -206,7 +226,7 @@ node server.js
 - [x] 故事蓝图（📋子标签+5卡片折叠+版本历史回退+问卷种子自动注入）
 - [x] RAG上下文管理（HNSW向量索引+混合检索RRF融合+自动分块+Embedding缓存+BM25降级）
 - [x] 压缩层（增量/存量/全量三层模型+LLM摘要生成+异步队列）
-- [x] 组装层（蓝图+RAG+项目摘要注入系统提示词+三模式上下文拼接）
+- [x] 组装层（蓝图+RAG+项目摘要注入系统提示词+三模式上下文拼接+结构化数据注入）
 - [x] 检查点系统（对话流只读卡片+提交按钮联动+增量更新蓝图）
 - [x] Token统计精准化（实际费用=定价×token数×折扣+缓存token追踪+stream_options usage提取）
 - [x] SSE reload-chat（爬虫完成后自动刷新聊天界面）
@@ -224,42 +244,53 @@ node server.js
 
 ## 开发计划
 
-### 🔜 下一阶段（v1.3）
+### ✅ 已完成（v1.3 — 2026-05-30）
 
 **数据基建：**
 
 | 任务 | 说明 | 状态 |
 |------|------|------|
-| 主角标记 | writing_characters.is_protagonist + 智能体二次确认机制 | ⬜ |
-| 时间线多纪年 | plot_timeline_events 加 absolute_year/era_name/faction_calendars | ⬜ |
-| 世界观结构化 | 新增 world_entities(层级树)+world_relations(实体关系) 表 | ⬜ |
+| 主角标记 | writing_characters.is_protagonist + 智能体二次确认机制 | ✅ |
+| 时间线多纪年 | plot_timeline_events 加 absolute_year/era_name/faction_calendars | ✅ |
+| 世界观结构化 | 新增 world_entities(层级树)+world_relations(实体关系) 表 | ✅ |
 
 **LLM 提取 + Skill 优化：**
 
 | 任务 | 说明 | 状态 |
 |------|------|------|
-| 世界观→层级树提取 | LLM 从 world.era_summary 提取实体+关系→填充结构化表 | ⬜ |
-| 世界观设计 Skill 优化 | 加入结构化输出格式要求 | ⬜ |
-| 角色设计 Skill 优化 | 加入主角标记提示+关系网要求 | ⬜ |
-| 大纲设计 Skill 优化 | 加入时间线事件提取格式 | ⬜ |
-| 通用技能库补充 | 伏笔管理/冲突设计等 Skill 模板 | ⬜ |
-| 存量蓝图回填 | 已有项目文本→批量 LLM 提取→结构化数据 | ⬜ |
+| 世界观→层级树提取 | design_worldview 自动提取实体+关系→填充结构化表 | ✅ |
+| 世界观设计 Skill→固定工具 | design_worldview 转为 ORCHESTRATOR_TOOLS 固定工具 | ✅ |
+| 角色设计 Skill 优化 | 金手指/动机/关系网自动提取/is_protagonist标记 | ✅ |
+| 大纲设计 Skill 优化 | 标注阶段五专用+generate_outline_multi+前置条件检查 | ✅ |
+| 通用技能库补充 | 伏笔管理/冲突设计 Skill | ✅ |
+| 存量蓝图回填 | backfill-world API 端点 | ✅ |
 
 **浮动画布：**
 
 | 任务 | 说明 | 状态 |
 |------|------|------|
-| 画布骨架 | fixed 遮罩 + 暗色边框 + tab 切换 + 双模式交互(锁定/解锁) | ⬜ |
-| 世界观层级树 | 界门纲目科属种树形渲染 + 折叠展开 | ⬜ |
-| 角色星座图 | 主角居中 + 关联环绕 + 孤立外推 + relationship_edges 连线 | ⬜ |
-| 情节时间线 | horizontal 绝对时间轴 + 多纪年标签 + 伏笔标记 | ⬜ |
+| 画布骨架 | 悬浮窗（拖拽移动+右下角缩放+ESC关闭）+ 双模式交互 | ✅ |
+| 世界观层级树🌍 | 递归树形渲染 + 折叠展开 + 曲线连线 + 图例 | ✅ |
+| 角色星座图👤 | 主角居中 + 关联环绕 + 孤立外推 + 关系线颜色编码 | ✅ |
+| 时间线视图📖 | horizontal 绝对时间轴 + 多纪年标签 + 事件卡片 + 伏笔标记 | ✅ |
+| 大纲预览📋 | 卷折叠+章概要+批注+单卷重生成+确认推翻+导出JSON | ✅ |
 
 **交互完善：**
 
 | 任务 | 说明 | 状态 |
 |------|------|------|
-| 主角确认流程 | 智能体提议→选项按钮→is_protagonist=1→蓝图同步 | ⬜ |
-| tool_request 确认 | 子智能体请求工具时暂停流式、用户确认后继续 | ⬜ |
+| 主角确认流程 | 智能体提议→选项按钮→is_protagonist=1→蓝图同步 | ✅ |
+| tool_request 确认 | 子智能体请求工具时暂停流式→确认气泡→同意/拒绝 | ✅ |
+
+**架构优化：**
+
+| 任务 | 说明 | 状态 |
+|------|------|------|
+| 提示词外置 | 10个系统提示词从server.js迁移到prompts/*.md | ✅ |
+| 五阶段编排师 | 每次只问一个问题/不能跳步/起承转合/按钮即引导 | ✅ |
+| 阶段门控 | _checkStagePrerequisites() + GET /stage-status | ✅ |
+| 双语调试日志 | 全链路中英双语 broadcastDevLog | ✅ |
+| 随机命名表 | Python脚本生成250姓氏+370名字用字 | ✅ |
 
 ### ✅ 已完成（v1.2）
 
@@ -289,20 +320,34 @@ node server.js
 
 ```
 新-无限画布本地部署/
-├── server.js              # Express 后端 (~6500行)
+├── server.js              # Express 后端 (~4800行)
 ├── hnsw_index.js          # 轻量HNSW向量索引（内存+SQL.js持久化）
 ├── package.json           # Node.js 依赖声明
 ├── requirements.txt       # Python 依赖声明（Scrapling爬虫）
 ├── setup.bat              # Windows 一键环境安装脚本
 ├── chrome_debug.bat       # Chrome CDP调试模式启动器
-├── scraper_bridge.py      # Scrapling → Node.js 爬虫桥接（~1200行）
-├── glyph_decoder.py       # PUA字体字形解码器（破解反爬乱码，~600行）
+├── scraper_bridge.py      # Scrapling → Node.js 爬虫桥接
+├── glyph_decoder.py       # PUA字体字形解码器（破解反爬乱码）
 ├── pua_mapping_custom.json # 自定义字形映射表
 ├── image_gen.py           # AI生图桥接模块
+├── prompts/               # 🆕 系统提示词（10个独立.md文件）
+│   ├── orchestrator.md    # 五阶段编排师
+│   ├── design_worldview.md # 世界观设计Agent
+│   ├── character.md       # 角色设计Agent
+│   ├── outliner.md        # 大纲生成Agent（降级用）
+│   ├── outliner_volume.md # 卷大纲Agent（多卷并行用）
+│   ├── world_extraction.md # 世界观提取Agent（备用）
+│   ├── crawler.md         # 爬虫Agent
+│   ├── dialog.md          # 对白Agent
+│   ├── reviewer.md        # 一致性审核Agent
+│   └── skill_optimizer.md # 技能优化Agent
+├── scripts/               # 🆕 辅助脚本
+│   └── generate_name_pool.py # 随机命名表生成
 ├── public/
 │   ├── canvas.html        # 画布主页面
-│   ├── write.html         # 写作页面（多智能体聊天）
-│   ├── write.js           # 写作前端逻辑 (~3200行)
+│   ├── write.html         # 写作页面（多智能体聊天 + 浮动画布）
+│   ├── write.js           # 写作前端逻辑 (~4600行)
+│   ├── name_pool.json     # 🆕 随机命名表数据（10KB）
 │   ├── projects.html      # 项目列表
 │   ├── agents.html        # 智能体管理
 │   ├── settings.html      # 生图 API 设置
