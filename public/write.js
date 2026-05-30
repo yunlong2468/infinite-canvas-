@@ -1318,6 +1318,60 @@ function _renderToolResult(rawText) {
   return formatAgentContent(rawText);
 }
 
+// 渲染交互确认气泡（工具确认/主角确认）
+function _renderConfirmBubble(msg) {
+  var confirmId = msg.confirmId || ('c_' + Date.now());
+  var type = msg.confirmType || 'tool'; // tool | protagonist
+  var btns = '';
+  if (type === 'tool') {
+    btns = '<button class="confirm-btn confirm-yes" onclick="event.stopPropagation();_handleToolConfirm(\''+confirmId+'\',\'approve\')">✅ 同意执行 | Approve</button>'
+         + '<button class="confirm-btn confirm-no" onclick="event.stopPropagation();_handleToolConfirm(\''+confirmId+'\',\'deny\')">❌ 拒绝 | Deny</button>';
+  } else if (type === 'protagonist') {
+    btns = '<button class="confirm-btn confirm-yes" onclick="event.stopPropagation();_handleProtagonistConfirm(\''+confirmId+'\','+msg.charId+')">👑 确认主角 | Confirm</button>'
+         + '<button class="confirm-btn confirm-no" onclick="event.stopPropagation();_handleProtagonistSkip(\''+confirmId+'\')">⏭ 跳过 | Skip</button>';
+  }
+  return '<div class="confirm-bubble" data-confirm-id="'+confirmId+'" style="margin:10px 0;padding:10px 14px;border:1px solid '+(type==='protagonist'?'rgba(245,166,35,0.3)':'rgba(5,163,197,0.3)')+';border-radius:10px;background:'+(type==='protagonist'?'rgba(245,166,35,0.06)':'rgba(5,163,197,0.05)')+';">'
+    + '<div style="font-size:13px;color:#ddd;margin-bottom:8px;">'+msg.content+'</div>'
+    + '<div class="confirm-btns" style="display:flex;gap:8px;">'+btns+'</div>'
+    + '</div>';
+}
+
+// 工具确认处理
+function _handleToolConfirm(confirmId, action) {
+  var el = document.querySelector('.confirm-bubble[data-confirm-id="'+confirmId+'"]');
+  if (el) {
+    el.querySelector('.confirm-btns').innerHTML = '<span style="font-size:11px;color:var(--text2)">⏳ 处理中... | Processing...</span>';
+    el.querySelector('.confirm-btns').style.pointerEvents = 'none';
+  }
+  api('POST', '/writing-projects/' + projectId + '/confirm-tool', { confirmId: confirmId, action: action });
+}
+
+// 主角确认处理
+function _handleProtagonistConfirm(confirmId, charId) {
+  var el = document.querySelector('.confirm-bubble[data-confirm-id="'+confirmId+'"]');
+  if (el) {
+    el.querySelector('.confirm-btns').innerHTML = '<span style="font-size:11px;color:#22C55E">✅ 已确认为主角 | Confirmed as protagonist</span>';
+    el.querySelector('.confirm-btns').style.pointerEvents = 'none';
+  }
+  api('PUT', '/writing-projects/' + projectId + '/characters/' + charId + '/set-protagonist', {})
+    .then(function() {
+      setTimeout(function() { BLUEPRINT.load(); }, 500);
+    });
+}
+
+// 跳过主角确认
+function _handleProtagonistSkip(confirmId) {
+  var el = document.querySelector('.confirm-bubble[data-confirm-id="'+confirmId+'"]');
+  if (el) { el.style.opacity = '0.4'; el.querySelector('.confirm-btns').innerHTML = '<span style="font-size:11px;color:var(--text2)">已跳过 | Skipped</span>'; }
+}
+
+// 确认按钮样式
+(function() {
+  var style = document.createElement('style');
+  style.textContent = '.confirm-btn{padding:5px 14px;font-size:12px;border-radius:6px;cursor:pointer;border:0.5px solid transparent;transition:all 0.15s;font-family:inherit;}.confirm-yes{background:rgba(34,197,94,0.15);color:#22C55E;border-color:rgba(34,197,94,0.25);}.confirm-yes:hover{background:rgba(34,197,94,0.25);}.confirm-no{background:rgba(245,63,63,0.1);color:#F53F3F;border-color:rgba(245,63,63,0.2);}.confirm-no:hover{background:rgba(245,63,63,0.2);}';
+  document.head.appendChild(style);
+})();
+
 function formatAgentContent(text) {
   if (!text) return '';
   var codeBlocks = [];
@@ -2260,12 +2314,29 @@ async function doStreamingCall(text) {
               }
             }
             scrollToBottomIfAtBottom();
+          } else if (evt.type === 'tool_request_confirm') {
+            // 子智能体请求工具 → 暂停流式，等待用户确认
+            var trcAgent = evt.subAgent || _resolveToolAgent(evt.tool);
+            var trcLabel = getAgentName(trcAgent);
+            var trcReq = evt.requested || '未知工具';
+            var confirmMsg = {type:'confirm',confirmId:evt.confirmId,tool:evt.tool,subAgent:evt.subAgent,requested:evt.requested,args:evt.args,content:trcLabel+' 请求调用 <b>'+trcReq+'</b> 工具',time:Date.now()};
+            agentMsgs.push(confirmMsg);
+            if (ensureMsgInner()) appendMsgToDOM(_renderConfirmBubble(confirmMsg));
+            scrollToBottomIfAtBottom();
+          } else if (evt.type === 'tool_request_status') {
+            // 工具确认结果 → 更新或移除确认气泡
+            var trsEl = document.querySelector('.confirm-bubble[data-confirm-id="'+evt.confirmId+'"]');
+            if (trsEl) {
+              var statusText = evt.status === 'approved' ? '✅ 已同意 · 执行中... | Approved · Running...' : ('❌ 已'+(evt.reason==='timeout'?'超时':'拒绝')+' | '+(evt.reason==='timeout'?'Timed out':'Denied'));
+              trsEl.querySelector('.confirm-btns').innerHTML = '<span style="font-size:11px;color:var(--text2)">'+statusText+'</span>';
+              trsEl.querySelector('.confirm-btns').style.pointerEvents = 'none';
+            }
           } else if (evt.type === 'tool_request') {
-            // 子智能体向主智能体请求工具
+            // 旧版兼容：子智能体向主智能体请求工具（自动授权，无需确认）
             var trAgent = evt.subAgent || _resolveToolAgent(evt.tool);
             var trLabel = getAgentName(trAgent);
             var trReqLabel = evt.requested || '未知工具';
-            var reqMsg = {type:'system',content:trLabel+' 正在调用 '+trReqLabel+' 工具（自动授权）',time:Date.now()};
+            var reqMsg = {type:'system',content:trLabel+' 正在调用 '+trReqLabel+' 工具',time:Date.now()};
             agentMsgs.push(reqMsg);
             if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(reqMsg));
           } else if (evt.type === 'tool_end') {
@@ -2320,7 +2391,24 @@ async function doStreamingCall(text) {
             // 刷大纲/角色/SKILL面板
             var agentType = _resolveToolAgent(evt.tool);
             if (agentType === 'outliner') { setTimeout(function(){loadOutline();}, 500); }
-            if (agentType === 'character') { setTimeout(function(){loadCharacters();}, 500); }
+            if (agentType === 'character') {
+              setTimeout(function(){loadCharacters();}, 500);
+              // 角色生成后自动检查主角确认
+              setTimeout(function() {
+                api('GET', '/writing-projects/' + projectId + '/protagonist-candidate')
+                  .then(function(r) { return r.json(); })
+                  .then(function(data) {
+                    if (data.hasConfirmed) { console.log('[Protagonist] 主角已确认 跳过提议 | Already confirmed, skip proposal'); return; }
+                    if (!data.candidate) { console.log('[Protagonist] 无角色可提议 | No characters to propose'); return; }
+                    var c = data.candidate;
+                    var pid = 'pc_' + Date.now();
+                    var pMsg = {type:'confirm',confirmId:pid,confirmType:'protagonist',charId:c.id,total:data.total,content:'检测到 '+data.total+' 个角色，候选主角：<b>'+c.name+'</b><br><span style="font-size:11px;color:var(--text2)">是否确认为主角？| Confirm as protagonist?</span>',time:Date.now()};
+                    agentMsgs.push(pMsg);
+                    if (ensureMsgInner()) appendMsgToDOM(_renderConfirmBubble(pMsg));
+                    scrollToBottomIfAtBottom();
+                  });
+              }, 1000);
+            }
             if (agentType === 'load_skill' || agentType === 'skill_optimizer') { setTimeout(function(){SKILL.load();}, 500); }
           } else if (evt.type === 'error') {
             if (streamConnTimeout) { clearTimeout(streamConnTimeout); streamConnTimeout = null; }

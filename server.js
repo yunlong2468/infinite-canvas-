@@ -30,6 +30,23 @@ function clearStreamBuffer(projectId) {
     try { if (fs.existsSync(streamBufferPath(projectId))) fs.unlinkSync(streamBufferPath(projectId)); } catch(e) {}
 }
 
+// 从 prompts/ 目录加载系统提示词（避免大段文本硬编码在server.js中）
+var PROMPTS_DIR = path.join(__dirname, 'prompts');
+var _promptCache = {};
+function loadPrompt(filename) {
+    if (_promptCache[filename]) return _promptCache[filename];
+    var filePath = path.join(PROMPTS_DIR, filename);
+    try {
+        var content = fs.readFileSync(filePath, 'utf8').trim();
+        _promptCache[filename] = content;
+        console.log('[Prompt] 已加载 ' + filename + ' (' + content.length + ' 字符)');
+        return content;
+    } catch(e) {
+        console.error('[Prompt] 加载失败 ' + filename + ': ' + e.message);
+        return ''; // 降级：返回空字符串，不阻塞启动
+    }
+}
+
 // ==================== SQL.js 数据库 ====================
 let db = null;
 
@@ -40,6 +57,11 @@ function saveDB() { if (!db) return; fs.writeFileSync(DB_PATH, Buffer.from(db.ex
 // 系统配置读写（密钥/Token集中管理，数据不入git）
 function getSysConfig(key) { var row = queryOne('SELECT value FROM system_config WHERE key=?', [key]); return row ? row.value : ''; }
 function setSysConfig(key, value) { dbRun('INSERT OR REPLACE INTO system_config (key, value) VALUES (?,?)', [key, value]); saveDB(); }
+
+// ===== tool_request 用户确认机制 =====
+// 子智能体请求工具时暂停流式，等待用户确认
+var pendingToolConfirms = {}; // confirmId → { resolve, reject, timeout, tool, requested, createdAt }
+var _confirmCounter = 0;
 
 // 构建项目进度摘要（注入system prompt，让LLM知道已完成的工作）
 function _buildProjectSummary(projectId, userId) {
@@ -740,80 +762,20 @@ app.post('/api/writing-projects/:id/undo-last', auth, (req, res) => {
 });
 
 // ==================== Agent LLM 调用 ====================
-var ORCHESTRATOR_SYSTEM = '你是一个小说创作调配师，负责采访用户需求、协调下游写作智能体工作。\n\n'+
-'## 你的职责\n'+
-'1. 向用户询问以下信息（每次只问1-2个问题，不要一口气全问）：\n'+
-'   - 小说类型（玄幻/都市/科幻/仙侠/武侠/悬疑/言情/历史/同人...）和细分方向\n'+
-'   - 目标字数（短篇3万字 / 中篇20万字 / 长篇100万字+）\n'+
-'   - 是否有初步故事构思或灵感\n'+
-'   - 角色设想（主角、配角、反派等）\n'+
-'   - 风格参考（类似某某作家/某某作品/某某流派）\n'+
-'   - 目标读者平台（番茄/起点/晋江/纵横...）\n'+
-'2. 收集足够信息后，询问用户是否授权爬取近6个月同类热门小说作为参考。授权后，必须明确询问用户希望爬取哪个目标平台。推荐平台时，根据用户的小说类型和发展意图，从以下平台中推荐最匹配的多个（至少2个）：\n'+
-'   - 番茄小说：流量大，适合爽文/系统流/末世/玄幻/快节奏短篇\n'+
-'   - 起点中文网：老牌平台，适合长篇/精品/传统玄幻/仙侠/都市\n'+
-'   - 晋江文学城：女性向为主，适合言情/耽美/女频/古言\n'+
-'   - 纵横中文网：中腰部作者友好，适合玄幻/仙侠/都市\n'+
-'   - 飞卢小说网：同人/系统流/无敌流/快节奏爽文首选\n'+
-'   - QQ阅读：腾讯系，覆盖面广，适合各类通俗小说\n'+
-'   - 七猫/掌阅：免费阅读平台，适合快节奏/短篇/新媒体文\n'+
-'   - 息壤中文网：新兴原创平台，适合创新题材/新人作者/小众类型\n'+
-'   - 菠萝包轻小说：轻小说/二次元/同人/校园日常向首选\n'+
-'   - 刺猬猫：二次元/轻小说/宅文/脑洞创意向\n'+
-'  严禁自行推断平台。必须等用户在回复中明确说出平台名称后，才能调用crawl_books工具。\n'+
-'3. 整合所有信息生成一份清晰的创作需求摘要，请用户确认\n'+
-'4. 用户确认后，调用generate_outline工具生成分卷分章大纲\n\n'+
-'## 工具使用规则\n'+
-'- 你是调配师，不要亲自生成大纲、角色档案、小说正文等内容，必须通过调用工具完成\n'+
-'- 需要生成大纲 → 调用generate_outline工具\n'+
-'- 需要设计角色 → 调用generate_characters工具\n'+
-'- 需要爬取数据 → 调用crawl_books工具（需先获取用户平台授权）\n'+
-'- 不确定操作流程时 → 先调用load_skill工具查阅相关技能指南\n'+
-'- 调用crawl_books前必须让用户明确说出平台名称，严禁从上下文推断\n'+
-'- 当需要用户从多个选项中做选择时（如脑洞/构思/方向/确认项），必须在末尾用「- [选项文字]」每行一个列出所有可选项目。\n'+
-'  例如你给出了三个脑洞，末尾必须列出：\n'+
-'  - [展开说说脑洞一：蒸汽内核]\n'+
-'  - [展开说说脑洞二：魔女改造蒸汽]\n'+
-'  - [展开说说脑洞三：契约魔女]\n'+
-'  - [这些都不喜欢，换个方向]\n'+
-'  重要：按钮数量必须覆盖所有你给出的选项，不能只列部分。\n'+
-'- 按钮文字应简洁（≤20字），足够让用户识别对应的是哪个选项。\n'+
-'  正文可以展开描述细节，按钮只做"选择"用途。\n'+
-	'- 任何需要用户执行的操作（生成大纲、设计角色、确认等），一律用「- [按钮文字]」按钮格式放在末尾，\n'+
-	'  绝对禁止在正文里写"请点击XX按钮""点击界面上的XX"这类文字引导。按钮即引导。\n'+
-	'- 用户确认需求后，末尾必须包含「- [确认无误，生成大纲]」按钮（以及修改需求等其他合理选项）。\n'+
-'- 你只负责：采访、整理需求摘要、提出建议、协调协调\n\n'+
-'## 风格\n'+
-'- 像一个有经验的编辑/策划一样对话，不要过于机械\n'+
-'- 根据用户的回答灵活调整后续问题\n'+
-'- 适当给出来自网文市场的建议（如"目前XX类型在XX平台比较吃香"）\n'+
-'- 不要替用户做决定，始终征求确认\n'+
-'- 简洁直接，避免堆砌同义反复的形容词和排比句（如"不再压制A、不再压制B、不再压制C"这类扩写禁止）\n'+
-'- 每个场景/构思用一句话概括核心冲突即可，不要铺陈细节直到用户明确要求展开\n'+
-'- 回复总长度控制在300字以内（不含按钮）\n'+
-	'- 【关键】用户已明确给出的数字（字数、章节数等），必须严格使用用户说的数字，绝对禁止自行替换为其他数字。\n'+
-	'  例如用户说3万字，你不得说5万/8万/10万等其他数字；用户未明确时才可给建议范围。\n\n'+
-'## 输出格式\n'+
-'- 回复结构：正文（分析/描述/建议）→ 提问或征求确认 → 选择按钮。\n'+
-'  也就是需要用户回应的提问，必须放在正文下方、按钮上方，作为结尾句。\n'+
-'- 以纯文本自然语言回复，按钮行放在回复最末尾\n'+
-'- 当需要用户选择或确认时，用提问语句收尾再列出选项按钮\n'+
-'\n'+
-'## 工具调用规则\n'+
-'- 优先使用工具完成任务，除非你只是和用户闲聊\n'+
-'- 如果用户有意图调用工具（例如@爬虫、@角色、@技能等），必须调用对应工具\n'+
-'- 如果你在思考中认为某个工具符合当前需要，就必须调用它，不要只停留在思考层面';
+var ORCHESTRATOR_SYSTEM = loadPrompt('orchestrator.md');
 
 // ==================== 调配师工具定义（MCP风格子智能体调用） ====================
 var ORCHESTRATOR_TOOLS = [
-  { type: "function", function: { name: "load_skill", description: "加载指定的技能指南。当你需要执行某个操作但不清楚具体流程时（如角色设计、大纲生成等），先调用此工具获取该技能的详细指南，然后再按指南操作。", parameters: { type: "object", properties: { skill_name: { type: "string", description: "要加载的技能名称，如：角色设计指南、大纲设计指南" } }, required: ["skill_name"] } } },
-  { type: "function", function: { name: "generate_outline", description: "根据用户需求生成小说分卷分章大纲。返回结构化JSON。当用户确认需求后调用。", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "generate_characters", description: "根据小说信息和大纲设计角色档案。返回JSON包含角色姓名、外貌、性格、背景、能力等。在大纲生成后或用户要求时调用。", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "crawl_books", description: "爬取/搜索同类热门小说数据作为创作参考。仅在用户已明确授权且用户本人明确说出了目标平台名称后调用。严禁自行推断或猜测平台。", parameters: { type: "object", properties: { platform: { type: "string", description: "用户明确说出的目标平台名称（番茄/起点/晋江/纵横/飞卢/QQ阅读/七猫/掌阅/息壤/菠萝包/刺猬猫等），严禁自行推断" }, keyword: { type: "string", description: "搜索关键词。根据对话历史和用户创作方向推断最相关的搜索词（如'玄幻重生'、'都市修仙'），用于在平台搜索同类热门书。" } }, required: ["platform", "keyword"] } } }
+  { type: "function", function: { name: "load_skill", description: "加载指定的技能指南。不确定操作流程时先调用此工具获取技能的详细指南。", parameters: { type: "object", properties: { skill_name: { type: "string", description: "要加载的技能名称，如：角色设计指南、大纲设计指南" } }, required: ["skill_name"] } } },
+  { type: "function", function: { name: "design_worldview", description: "[阶段二] 根据收集的世界观信息调用LLM生成完整世界观框架，自动提取实体和关系到数据库。在收集了至少5个方向的信息后调用。", parameters: { type: "object", properties: { genre: { type: "string", description: "题材类型" }, core_theme: { type: "string", description: "核心主题" }, world_scale: { type: "string", description: "世界规模" }, details: { type: "string", description: "用户补充的具体要求汇总" } } } } },
+  { type: "function", function: { name: "generate_characters", description: "[阶段三] 根据小说信息和世界观设计角色档案。返回JSON含角色姓名/外貌/性格/背景/能力/金手指等。会自动注入世界观上下文。在收集了足够角色信息后调用。", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "crawl_books", description: "爬取番茄小说同类热门小说数据。仅在用户明确授权并说出番茄后调用。当前仅支持番茄平台。", parameters: { type: "object", properties: { platform: { type: "string", description: "用户明确说出的平台名称(当前仅番茄)" }, keyword: { type: "string", description: "搜索关键词" } }, required: ["platform", "keyword"] } } },
+  { type: "function", function: { name: "plan_volume_blueprint", description: "[阶段四] 结构化保存卷蓝图规划结果(含每卷起承转合分配)。编排师完成4卷起承转合规划后调用。", parameters: { type: "object", properties: { blueprint_json: { type: "string", description: "完整卷蓝图JSON字符串" } }, required: ["blueprint_json"] } } },
+  { type: "function", function: { name: "generate_outline_multi", description: "[阶段五] 多智能体并行生成4卷详细大纲。自动检查前置条件，并行启动卷Agent，提取时间线事件。大纲不写入对话历史。", parameters: { type: "object", properties: {} } } }
 ];
 
 // 爬虫系统提示（需定义在executeToolAsync之前，crawl_books分支会引用）
-var CRAWLER_SYSTEM = '你是一个小说数据爬取分析助手。从提供的网页HTML中提取热门网络小说信息。\n\n## 输出格式\n严格输出JSON（用```json包裹）：\n```json\n{"书籍":[{"书名":"","作者":"","简介":"","热度":"","字数":"","标签":[""],"平台":"番茄/起点/晋江等"}]}\n```\n\n## 规则\n- 只提取HTML中实际存在的书籍信息，严禁编造书名或作者\n- 如果HTML内容中找不到任何书籍信息，返回 {"书籍":[]}\n- 有多少提取多少，不需要凑数\n- 平台字段填当前爬取的目标平台名称\n- 热度/字数如果HTML中没有，填"未知"\n\n## HTML结构参考\n- 番茄小说：书籍卡片通常在 class含"book"或"card"的div中，书名在h3/a标签，作者在p/span\n- 起点中文网：书籍列表在 class含"book-list"或"result"的区域，每条为li或div\n- 晋江/飞卢：类似结构，书名和作者通常在a标签或带class的span中\n- 通用规则：如果HTML结构不清晰，尝试提取所有看起来像"书名+作者"的文本配对';
+var CRAWLER_SYSTEM = loadPrompt('crawler.md');
 
 // ==================== 真实爬虫模块 ====================
 const iconv = require('iconv-lite');
@@ -1178,7 +1140,7 @@ function _cleanHTML(html) {
     } catch(e) { return html.substring(0, 20000); }
 }
 
-var SKILL_OPTIMIZER_SYSTEM = '你是一个技能（Skill）优化专家。你不仅创建技能指南，还可以为技能定义**新的可调用工具**，这些工具会被注册到调配师的工具箱中供后续调用。\n\n## 系统已有工具（不可重复定义）\n- generate_outline：生成小说分卷分章大纲\n- generate_characters：设计角色档案\n- crawl_books：爬取/搜索同类热门小说数据\n- load_skill：加载技能指南\n\n## 输出格式\n请严格输出以下JSON（不含markdown代码块标记）：\n{\n  "content": "技能指南（Markdown格式，含场景、步骤、注意事项）",\n  "tools": [\n    {\n      "name": "工具英文名（snake_case，如 design_worldview）",\n      "description": "工具用途简短描述（给AI看的，说明何时调用）",\n      "parameters": {\n        "type": "object",\n        "properties": {\n          "参数名": {"type": "参数类型", "description": "参数描述"}\n        }\n      }\n    }\n  ]\n}\n\n## 规则\n1. 如果技能的操作可以完全由已有工具完成，tools数组为空 []\n2. 如果技能需要新的操作能力（如世界观设计、战斗系统设计等），在tools中定义新工具\n3. content中的操作步骤必须明确写出调用哪个工具及其参数映射\n4. tools中的每个工具都必须有清晰的 name、description、parameters\n5. 不要输出```json标记，直接输出纯JSON';
+var SKILL_OPTIMIZER_SYSTEM = loadPrompt('skill_optimizer.md');
 
 // 子智能体LLM调用（支持request_tool多轮循环）
 // messages: 对话历史（会被原地修改）
@@ -1946,11 +1908,32 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                         var requestedArgs = reqArgs.tool_args || {};
                         if (typeof requestedArgs === 'string') { try { requestedArgs = JSON.parse(requestedArgs); } catch(e) { requestedArgs = {}; } }
                         console.log('[Write LLM] 子智能体 '+toolName+' 请求工具: '+requestedTool);
-                        // 通知前端
-                        res.write('data: '+JSON.stringify({type:'tool_request',tool:toolName,subAgent:actualSubAgent,requested:requestedTool,args:requestedArgs})+'\n\n');
-                        // 执行请求的工具
-                        var reqResult = await executeToolAsync(requestedTool, JSON.stringify(requestedArgs), projectId, req.userId, null, null, null, null);
-                        console.log('[Write LLM] 子智能体请求的工具完成: '+requestedTool+' '+reqResult.summary);
+                        // 暂停流式，等待用户确认
+                        var confirmId = 'tc_' + (++_confirmCounter) + '_' + Date.now();
+                        res.write('data: '+JSON.stringify({type:'tool_request_confirm',confirmId:confirmId,tool:toolName,subAgent:actualSubAgent,requested:requestedTool,args:requestedArgs})+'\n\n');
+                        broadcastDevLog('info','server','[ToolConfirm] 等待用户确认 | Waiting for user: '+requestedTool+' confirmId='+confirmId);
+                        // 等待用户确认（30秒超时自动拒绝）
+                        var confirmPromise = new Promise(function(resolve) {
+                            var timeout = setTimeout(function() {
+                                broadcastDevLog('warn','server','[ToolConfirm] 超时自动拒绝 | Timeout auto-deny: '+requestedTool);
+                                delete pendingToolConfirms[confirmId];
+                                resolve({ approved: false, timedOut: true });
+                            }, 30000);
+                            pendingToolConfirms[confirmId] = { resolve: resolve, timeout: timeout, tool: toolName, requested: requestedTool };
+                        });
+                        var confirmResult = await confirmPromise;
+                        var reqResult;
+                        if (confirmResult.approved) {
+                            // 用户同意 → 执行工具
+                            res.write('data: '+JSON.stringify({type:'tool_request_status',confirmId:confirmId,status:'approved',tool:toolName,requested:requestedTool})+'\n\n');
+                            reqResult = await executeToolAsync(requestedTool, JSON.stringify(requestedArgs), projectId, req.userId, null, null, null, null);
+                            console.log('[Write LLM] 子智能体请求的工具完成: '+requestedTool+' '+reqResult.summary);
+                        } else {
+                            // 用户拒绝或超时 → 跳过
+                            res.write('data: '+JSON.stringify({type:'tool_request_status',confirmId:confirmId,status:'denied',tool:toolName,requested:requestedTool,reason:confirmResult.timedOut?'timeout':'user_denied'})+'\n\n');
+                            reqResult = { error: confirmResult.timedOut ? '用户确认超时 | Confirmation timeout' : '用户拒绝了工具调用 | User denied tool call', summary: '已跳过「'+requestedTool+'」' };
+                            console.log('[Write LLM] 工具请求被'+(confirmResult.timedOut?'超时':'用户')+'拒绝: '+requestedTool);
+                        }
                         // 将工具结果注入子智能体会话
                         var toolResultMsg = { role: 'tool', tool_call_id: reqTc.id, content: JSON.stringify(reqResult) };
                         subAgentMsgs.push(toolResultMsg);
@@ -1983,16 +1966,43 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
                         console.log('[蓝图] 工具完成检测 toolName='+toolName+' agent='+actualSubAgent+' summary='+(toolResult.summary||'').substring(0,50));
                         broadcastDevLog('info','server','[蓝图] 工具完成检测 toolName='+toolName+' agent='+actualSubAgent);
                         if (actualSubAgent === 'character' || tlNameLower.indexOf('character') >= 0) {
-                            _incrementalUpdateBlueprint(projectId, 'character', { name: toolResult.summary || '' });
-                            broadcastDevLog('info','server','[蓝图] 角色自动更新完成');
+                            // 从DB获取确认的主角名，而非用摘要文本
+                            var protagName = '';
+                            var protagChar = queryOne('SELECT name FROM writing_characters WHERE project_id=? AND is_protagonist=1 LIMIT 1', [projectId]);
+                            if (protagChar) {
+                                protagName = protagChar.name;
+                            } else {
+                                // 回退：取第一个角色
+                                var firstChar = queryOne('SELECT name FROM writing_characters WHERE project_id=? ORDER BY id LIMIT 1', [projectId]);
+                                if (firstChar) protagName = firstChar.name;
+                            }
+                            _incrementalUpdateBlueprint(projectId, 'character', { name: protagName || toolResult.summary || '' });
+                            broadcastDevLog('info','server','[蓝图] 角色自动更新完成 主角='+protagName);
                         } else if (actualSubAgent === 'outliner' || tlNameLower.indexOf('outline') >= 0) {
                             _incrementalUpdateBlueprint(projectId, 'conflict', { main_thread: toolResult.summary || '' });
                             broadcastDevLog('info','server','[蓝图] 大纲自动更新完成');
                         } else if (tlNameLower.indexOf('world') >= 0 || tlNameLower.indexOf('世界观') >= 0 || actualSubAgent.indexOf('world') >= 0) {
-                            // 世界观内容在toolResult.result中（_accContent已累积完整内容）
-                            var _worldContent = (toolResult.result || '').substring(0, 500);
-                            _incrementalUpdateBlueprint(projectId, 'worldbuilding', { era: _worldContent });
-                            broadcastDevLog('info','server','[蓝图] 世界观自动更新完成 内容长度='+(toolResult.result||'').length);
+                            // 世界观内容在toolResult.result中 → 提取纯文本摘要（跳过JSON结构）
+                            var _raw = toolResult.result || '';
+                            var _eraText = '';
+                            // 尝试提取"时代概要"字段的描述部分
+                            var _eraMatch = _raw.match(/时代概要[：:]\s*(.+?)(?:\n|$)/);
+                            if (_eraMatch) { _eraText = _eraMatch[1].substring(0, 200); }
+                            else {
+                                // 回退：去掉JSON花括号内容，取纯文本
+                                _eraText = _raw.replace(/\{[\s\S]*?\}/g, '').replace(/```[\s\S]*?```/g, '').trim().substring(0, 300);
+                            }
+                            // 提取势力列表
+                            var _factions = [];
+                            var _fMatch = _raw.match(/势力[：:]\s*(.+?)(?:\n|$)/);
+                            if (_fMatch) { _factions = _fMatch[1].split(/[,，、]/).map(function(s){return s.trim();}).filter(Boolean); }
+                            // 从world_entities表获取势力类型实体作为补充
+                            if (!_factions.length) {
+                                var _entFactions = queryAll("SELECT name FROM world_entities WHERE project_id=? AND type='势力' LIMIT 8", [projectId]);
+                                if (_entFactions.length) _factions = _entFactions.map(function(e){return e.name;});
+                            }
+                            _incrementalUpdateBlueprint(projectId, 'worldbuilding', { era: _eraText || '世界观已生成（详见world_entities表）', factions: _factions });
+                            broadcastDevLog('info','server','[蓝图] 世界观自动更新完成 文本长度='+_eraText.length+' 势力='+_factions.length);
                         } else {
                             broadcastDevLog('info','server','[蓝图] 工具不在自动更新范围: '+toolName);
                         }
@@ -2198,14 +2208,7 @@ app.post('/api/writing-projects/:id/llm-call', auth, async (req, res) => {
 });
 
 // ==================== 对话Agent ====================
-var DIALOG_SYSTEM = '你是小说对白专家，负责模拟角色之间的对话。\n\n'+
-'## 要求\n'+
-'- 根据提供的角色档案，模拟角色之间的自然对话\n'+
-'- 保持角色性格一致性（说话方式、口头禅、性格特征）\n'+
-'- 考虑角色之间的关系状态（友好/敌对/爱慕等）\n'+
-'- 输出纯对话文本，格式为：角色名：对话内容\n'+
-'- 可以在括号内添加简短的动作/表情描述，如（冷笑）（握紧拳头）\n'+
-'- 对话要推动剧情，不要空洞寒暄';
+var DIALOG_SYSTEM = loadPrompt('dialog.md');
 
 app.post('/api/writing-projects/:id/generate-dialog', auth, (req, res) => {
     const projectId = parseInt(req.params.id);
@@ -2301,6 +2304,65 @@ app.delete('/api/writing-projects/:id/characters/:cid', auth, (req, res) => {
     res.json({ ok:true });
 });
 
+// 设置主角：清除旧主角标记后设为1，同步蓝图
+app.put('/api/writing-projects/:id/characters/:cid/set-protagonist', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var charId = parseInt(req.params.cid);
+    // 清除该项目下所有旧的主角标记
+    dbRun('UPDATE writing_characters SET is_protagonist=0, updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND is_protagonist=1', [projectId]);
+    // 设置新主角
+    dbRun('UPDATE writing_characters SET is_protagonist=1, updated_at=CURRENT_TIMESTAMP WHERE id=? AND project_id=?', [charId, projectId]);
+    saveDB();
+    // 同步到蓝图
+    var c = queryOne('SELECT name FROM writing_characters WHERE id=?', [charId]);
+    if (c) {
+        _incrementalUpdateBlueprint(projectId, 'character', { name: c.name });
+    }
+    console.log('[Writing] 主角已确认: project='+projectId+' charId='+charId+' name='+(c?c.name:''));
+    broadcastDevLog('info','server','[Protagonist] 主角确认: '+(c?c.name:'')+' | Protagonist confirmed: '+(c?c.name:''));
+    res.json({ ok: true, name: c ? c.name : '' });
+});
+
+// 获取主角候选（角色生成后自动提议用）
+app.get('/api/writing-projects/:id/protagonist-candidate', auth, (req, res) => {
+    var chars = queryAll('SELECT * FROM writing_characters WHERE project_id=? ORDER BY id', [req.params.id]);
+    var protagonist = null;
+    // 优先找已标记为主角的
+    for (var i = 0; i < chars.length; i++) {
+        if (chars[i].is_protagonist === 1) { protagonist = chars[i]; break; }
+    }
+    // 其次找profile_json中有is_protagonist标记的
+    if (!protagonist) {
+        for (var i = 0; i < chars.length; i++) {
+            try {
+                var pf = JSON.parse(chars[i].profile_json || '{}');
+                if (pf.is_protagonist || pf['主角'] || (pf['角色类型'] === '主角')) { protagonist = chars[i]; break; }
+            } catch(e) {}
+        }
+    }
+    // 都没有就用第一个角色作为候选
+    if (!protagonist && chars.length > 0) protagonist = chars[0];
+    res.json({ candidate: protagonist, total: chars.length, hasConfirmed: chars.some(function(c) { return c.is_protagonist === 1; }) });
+});
+
+// tool_request 用户确认端点
+app.post('/api/writing-projects/:id/confirm-tool', auth, (req, res) => {
+    var { confirmId, action } = req.body; // action: 'approve' | 'deny'
+    if (!confirmId || !action) return res.status(400).json({ error: '缺少confirmId或action参数' });
+    var pending = pendingToolConfirms[confirmId];
+    if (!pending) return res.status(404).json({ error: '确认请求已过期或不存在 | Confirmation expired or not found' });
+    console.log('[ToolConfirm] confirmId='+confirmId+' action='+action+' tool='+pending.tool+' requested='+pending.requested);
+    broadcastDevLog('info','server','[ToolConfirm] confirmId='+confirmId+' action='+action+' | User '+(action==='approve'?'approved':'denied')+' tool: '+pending.requested);
+    clearTimeout(pending.timeout);
+    if (action === 'approve') {
+        pending.resolve({ approved: true });
+    } else {
+        pending.resolve({ approved: false });
+    }
+    delete pendingToolConfirms[confirmId];
+    res.json({ ok: true });
+});
+
 // ==================== 世界观实体 CRUD ====================
 app.get('/api/writing-projects/:id/world-entities', auth, (req, res) => {
     const entities = queryAll('SELECT * FROM world_entities WHERE project_id=? ORDER BY id', [req.params.id]);
@@ -2362,30 +2424,7 @@ app.delete('/api/writing-projects/:id/world-relations/:rid', auth, (req, res) =>
 });
 
 // ==================== 角色Agent ====================
-var CHARACTER_SYSTEM = '你是小说角色设计专家。根据用户提供的小说信息和大纲，设计角色档案。\n\n'+
-'## 输出格式\n'+
-'请输出以下JSON：\n'+
-'```json\n'+
-'{\n'+
-'  "角色": [{\n'+
-'    "姓名":"主角名",\n'+
-'    "别名":"称号/道号",\n'+
-'    "性别":"男/女",\n'+
-'    "年龄":"外表年龄/实际年龄",\n'+
-'    "外貌":"详细外貌描写，100-200字",\n'+
-'    "性格":"性格特征描述",\n'+
-'    "背景":"身世和成长经历",\n'+
-'    "能力":"功法/能力/特长",\n'+
-'    "命运弧线":"角色在故事中的成长轨迹和结局走向",\n'+
-'    "对白风格":"说话方式、口头禅、语言特点",\n'+
-'    "关系网":"与其他角色的关系列表"\n'+
-'  }]\n'+
-'}\n'+
-'```\n\n'+
-'## 要求\n'+
-'- 至少设计主角和相关重要配角\n'+
-'- 外貌描写要具体可画\n'+
-'- 命运弧线要涵盖从开篇到结局的完整变化';
+var CHARACTER_SYSTEM = loadPrompt('character.md');
 
 app.post('/api/writing-projects/:id/generate-characters', auth, (req, res) => {
     const projectId = parseInt(req.params.id);
@@ -2405,34 +2444,7 @@ app.post('/api/writing-projects/:id/generate-characters', auth, (req, res) => {
 });
 
 // ==================== 世界观提取Agent ====================
-var WORLD_EXTRACTION_SYSTEM = '你是小说世界观结构化提取专家。根据用户提供的世界观文本，提取实体和关系。\n\n'+
-'## 输出格式\n'+
-'请严格输出以下JSON（不要加任何解释文字）：\n'+
-'```json\n'+
-'{\n'+
-'  "实体": [{\n'+
-'    "临时ID":"e1",\n'+
-'    "名称":"沧玄界",\n'+
-'    "类型":"世界",\n'+
-'    "描述":"详细描述",\n'+
-'    "父临时ID":null\n'+
-'  }],\n'+
-'  "关系": [{\n'+
-'    "源临时ID":"e2",\n'+
-'    "目标临时ID":"e3",\n'+
-'    "关系类型":"敌对",\n'+
-'    "描述":"关系说明"\n'+
-'  }]\n'+
-'}\n'+
-'```\n\n'+
-'## 类型枚举\n'+
-'实体类型必须是以下之一：世界、势力、地点、力量等级、物种、人物、物品、概念、事件\n'+
-'关系类型必须是以下之一：敌对、同盟、从属、师徒、亲属、竞争、中立、克制\n\n'+
-'## 规则\n'+
-'- 每个势力/地点/力量体系/物种作为独立实体，parent_id指向所属上层实体\n'+
-'- 人物属于某个势力或地点\n'+
-'- 关系只在有明确关联的实体间建立，不要强行配对所有实体\n'+
-'- 父临时ID用于构建树形层级，null表示根节点';
+var WORLD_EXTRACTION_SYSTEM = loadPrompt('world_extraction.md');
 
 app.post('/api/writing-projects/:id/extract-world', auth, (req, res) => {
     const projectId = parseInt(req.params.id);
@@ -2582,29 +2594,7 @@ app.post('/api/writing-projects/:id/backfill-world', auth, (req, res) => {
 });
 
 // ==================== 大纲Agent ====================
-var OUTLINER_SYSTEM = '你是小说大纲生成专家。根据用户提供的小说需求摘要，生成分卷分章大纲。\n\n'+
-'## 输出格式\n'+
-'请严格输出以下JSON格式（不要加任何解释文字）：\n'+
-'```json\n'+
-'{\n'+
-'  "总体大纲": "200字以内的小说总体剧情走向描述",\n'+
-'  "卷": [\n'+
-'    {\n'+
-'      "卷名": "第一卷：开端",\n'+
-'      "卷概要": "100字以内，本卷的主要剧情走向",\n'+
-'      "章": [\n'+
-'        { "章名": "第1章 山洞奇遇", "概要": "50字以内，本章核心剧情", "关键事件": ["事件1","事件2"], "涉及角色": ["主角","配角"] },\n'+
-'        { "章名": "第2章 初入宗门", "概要": "50字以内", "关键事件": [], "涉及角色": [] }\n'+
-'      ]\n'+
-'    }\n'+
-'  ]\n'+
-'}\n'+
-'```\n\n'+
-'## 要求\n'+
-'- 根据目标字数计算大概卷数和章数（每章约3000-5000字）\n'+
-'- 第一卷的前3章需要写得特别详细（吸引读者）\n'+
-'- 每个关键事件应该有推进剧情的作用\n'+
-'- 章名可以简洁但不能空洞';
+var OUTLINER_SYSTEM = loadPrompt('outliner.md');
 
 // streamCallback: 流式回调 function({type:'thinking'|'content', delta:'...'})，null=非流式
 // tools: 工具定义数组(用于request_tool机制)，null=不传工具
@@ -2901,8 +2891,86 @@ function _emptyBlueprintObj() {
     };
 }
 
+// ===== 阶段门控：检查各阶段前置条件 =====
+function _checkStagePrerequisites(projectId, stage) {
+    var result = { passed: true, missing: [], details: {} };
+    var we = queryOne('SELECT COUNT(*) as c FROM world_entities WHERE project_id=?', [projectId]);
+    var wr = queryOne('SELECT COUNT(*) as c FROM world_relations WHERE project_id=?', [projectId]);
+    var ch = queryOne('SELECT COUNT(*) as c FROM writing_characters WHERE project_id=?', [projectId]);
+    var protag = queryOne('SELECT COUNT(*) as c FROM writing_characters WHERE project_id=? AND is_protagonist=1', [projectId]);
+    var rels = queryOne('SELECT COUNT(*) as c FROM relationship_edges WHERE project_id=?', [projectId]);
+    var vols = queryOne('SELECT COUNT(*) as c FROM writing_volumes WHERE project_id=?', [projectId]);
+    var tls = queryOne('SELECT COUNT(*) as c FROM plot_timeline_events WHERE project_id=?', [projectId]);
+
+    result.details = {
+        worldEntities: we ? we.c : 0,
+        worldRelations: wr ? wr.c : 0,
+        characters: ch ? ch.c : 0,
+        protagonistConfirmed: protag ? protag.c : 0,
+        relationships: rels ? rels.c : 0,
+        volumes: vols ? vols.c : 0,
+        timelineEvents: tls ? tls.c : 0
+    };
+
+    // 根据目标阶段检查
+    if (stage === 'worldbuilding' || stage === 'stage2') {
+        // 阶段二只需要阶段一完成（需求摘要确认），这里不做硬性检查
+        // 主要检查在编排师的行为约束中
+    } else if (stage === 'character' || stage === 'stage3') {
+        if ((we ? we.c : 0) < 5) { result.missing.push('世界观实体不足5个 | World entities < 5'); }
+        if ((wr ? wr.c : 0) < 2) { result.missing.push('世界观关系不足2条 | World relations < 2'); }
+    } else if (stage === 'blueprint' || stage === 'stage4') {
+        if ((we ? we.c : 0) < 10) { result.missing.push('世界观实体不足10个 | World entities < 10'); }
+        if ((ch ? ch.c : 0) < 3) { result.missing.push('角色不足3个 | Characters < 3'); }
+        if ((protag ? protag.c : 0) < 1) { result.missing.push('主角未确认 | Protagonist not confirmed'); }
+    } else if (stage === 'outline' || stage === 'stage5') {
+        if ((we ? we.c : 0) < 10) { result.missing.push('世界观实体不足10个 | World entities < 10'); }
+        if ((ch ? ch.c : 0) < 3) { result.missing.push('角色不足3个 | Characters < 3'); }
+        if ((protag ? protag.c : 0) < 1) { result.missing.push('主角未确认 | Protagonist not confirmed'); }
+        if ((rels ? rels.c : 0) < 5) { result.missing.push('角色关系不足5条 | Relationships < 5'); }
+    }
+
+    if (result.missing.length > 0) {
+        result.passed = false;
+        result.error = '阶段前置条件不满足：' + result.missing.join('；') + ' | Prerequisites not met: ' + result.missing.join('; ');
+    }
+    return result;
+}
+
+// 阶段状态查询端点
+app.get('/api/writing-projects/:id/stage-status', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var check = _checkStagePrerequisites(projectId, 'stage5'); // 返回全部检查
+
+    // 判断当前所处阶段
+    var currentStage = 1;
+    if (check.details.worldEntities >= 10 && check.details.worldRelations >= 5) currentStage = 2;
+    if (currentStage >= 2 && check.details.characters >= 3 && check.details.protagonistConfirmed >= 1 && check.details.relationships >= 5) currentStage = 3;
+    // 阶段四判断需要检查卷蓝图是否存在（story_blueprints.plot）
+    var bp = queryOne('SELECT blueprint_json FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    if (currentStage >= 3 && bp) {
+        try {
+            var bpJson = JSON.parse(bp.blueprint_json || '{}');
+            if (bpJson.plot && bpJson.plot.main_thread && bpJson.plot.main_thread.length > 10) currentStage = 4;
+        } catch(e) {}
+    }
+    if (currentStage >= 4 && check.details.volumes > 0 && check.details.timelineEvents > 0) currentStage = 5;
+
+    res.json({
+        currentStage: currentStage,
+        stageName: ['需求采访','世界观构建','角色设计','卷蓝图规划','大纲生成'][currentStage - 1] || '未知',
+        prerequisites: check,
+        details: check.details
+    });
+
+    broadcastDevLog('info','server',
+        '[StageCheck] 项目='+projectId+' 当前阶段='+currentStage+'/'+['需求采访','世界观构建','角色设计','卷蓝图规划','大纲生成'][currentStage-1]+
+        ' | Stage='+currentStage+' entities='+check.details.worldEntities+' chars='+check.details.characters+' protag='+check.details.protagonistConfirmed
+    );
+});
+
 // ===== 组装层：上下文拼接 =====
-// 将蓝图+项目摘要+RAG检索结果组装为系统提示词追加内容
+// 将蓝图+项目摘要+RAG检索+结构化数据组装为系统提示词追加内容
 async function _buildAssembledContext(projectId, userId, userQuery, mode) {
     var parts = [];
     // 1. 项目进度摘要（始终包含）
@@ -2914,6 +2982,63 @@ async function _buildAssembledContext(projectId, userId, userQuery, mode) {
         var blueprint = safeJsonParse(bp.blueprint_json, {});
         var bpSummary = _buildBlueprintSummary(blueprint);
         if (bpSummary) parts.push('## 故事蓝图\n' + bpSummary);
+    }
+    // 2.5 世界观结构化数据（从world_entities/world_relations读取，始终注入）
+    var weCount = queryOne('SELECT COUNT(*) as c FROM world_entities WHERE project_id=?', [projectId]);
+    if (weCount && weCount.c > 0) {
+        var entities = queryAll('SELECT id, name, type, description, parent_id FROM world_entities WHERE project_id=? ORDER BY id', [projectId]);
+        var weText = '## 世界观实体（共'+weCount.c+'个）\n';
+        // 按类型分组汇总
+        var typeGroups = {};
+        entities.forEach(function(e) {
+            var t = e.type || '其他';
+            if (!typeGroups[t]) typeGroups[t] = [];
+            typeGroups[t].push(e.name + (e.description ? '：'+e.description.substring(0,60) : ''));
+        });
+        Object.keys(typeGroups).forEach(function(t) {
+            var items = typeGroups[t];
+            weText += '- ' + t + '：' + items.slice(0, 8).join('、');
+            if (items.length > 8) weText += ' ...等'+items.length+'个';
+            weText += '\n';
+        });
+        // 关系摘要
+        var wrCount = queryOne('SELECT COUNT(*) as c FROM world_relations WHERE project_id=?', [projectId]);
+        if (wrCount && wrCount.c > 0) {
+            var rels = queryAll('SELECT fe.name as fn, te.name as tn, wr.relation_type FROM world_relations wr LEFT JOIN world_entities fe ON wr.from_entity_id=fe.id LEFT JOIN world_entities te ON wr.to_entity_id=te.id WHERE wr.project_id=?', [projectId]);
+            weText += '- 关系（'+wrCount.c+'条）：';
+            rels.slice(0, 5).forEach(function(r) {
+                weText += (r.fn||'?') + '→' + (r.relation_type||'关联') + '→' + (r.tn||'?') + '；';
+            });
+            if (rels.length > 5) weText += '等';
+            weText += '\n';
+        }
+        parts.push(weText);
+    }
+    // 2.6 角色数据（从writing_characters读取，标记主角）
+    var charCount = queryOne('SELECT COUNT(*) as c FROM writing_characters WHERE project_id=?', [projectId]);
+    if (charCount && charCount.c > 0) {
+        var chars = queryAll('SELECT id, name, is_protagonist, profile_json FROM writing_characters WHERE project_id=?', [projectId]);
+        var charText = '## 角色列表（共'+charCount.c+'个）\n';
+        chars.forEach(function(c) {
+            var pf = {};
+            try { pf = JSON.parse(c.profile_json || '{}'); } catch(e) {}
+            var role = c.is_protagonist === 1 ? '★主角' : (pf.角色类型 || '角色');
+            charText += '- ' + role + '：' + c.name;
+            if (pf.性格) charText += '（'+pf.性格.substring(0,30)+'）';
+            if (pf.能力) charText += ' 能力：'+pf.能力.substring(0,30);
+            charText += '\n';
+        });
+        parts.push(charText);
+    }
+    // 2.7 时间线事件摘要
+    var tlCount = queryOne('SELECT COUNT(*) as c FROM plot_timeline_events WHERE project_id=?', [projectId]);
+    if (tlCount && tlCount.c > 0) {
+        var tls = queryAll('SELECT event_name, absolute_year, event_type FROM plot_timeline_events WHERE project_id=? ORDER BY absolute_year ASC LIMIT 10', [projectId]);
+        var tlText = '## 时间线（共'+tlCount.c+'个事件）\n';
+        tls.forEach(function(e) {
+            tlText += '- ' + (e.absolute_year!=null?e.absolute_year+'年 ':'') + '[' + (e.event_type||'事件') + '] ' + e.event_name + '\n';
+        });
+        parts.push(tlText);
     }
     // 3. RAG检索（日常模式轻量，检查点模式全量）
     var searchK = mode === 'checkpoint' ? 8 : 3;
@@ -2939,7 +3064,7 @@ async function _buildAssembledContext(projectId, userId, userQuery, mode) {
         if (meta.approach) parts.push('## 当前引导方案\n使用「' + meta.approach + '」模式');
     }
     var result = parts.join('\n\n');
-    if (result) broadcastDevLog('info','server','[组装] 上下文拼接完成 片段数='+parts.length+' 模式='+mode);
+    if (result) broadcastDevLog('info','server','[组装] 上下文拼接完成 片段数='+parts.length+' 模式='+mode+' 内容长度='+result.length);
     return result;
 }
 
@@ -4095,8 +4220,7 @@ app.put('/api/optimized-skills/:sid', auth, (req, res) => {
 });
 
 // ==================== 审核Agent ====================
-var REVIEWER_SYSTEM = '你是小说一致性审核专家。检查小说内容中的矛盾和不一致之处。\n\n请检查以下内容：\n1. 角色行为是否与其性格/背景一致\n2. 剧情是否存在逻辑矛盾\n3. 伏笔是否前后对应\n4. 时间线是否连贯\n5. 同一角色在不同章节中的描述是否一致\n\n输出格式：\n'+
-'问题1: [描述]\n建议: [修改建议]\n\n如果没有问题，回复"✅ 未发现一致性问题"';
+var REVIEWER_SYSTEM = loadPrompt('reviewer.md');
 
 app.post('/api/writing-projects/:id/review-chapter', auth, (req, res) => {
     var projectId = parseInt(req.params.id);
