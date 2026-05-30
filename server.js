@@ -1532,6 +1532,129 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
                     resolve({ result: errContent, error: errDetail, summary: errSummary });
                 }
             });
+        } else if (tl.indexOf('design_worldview') >= 0 || tl.indexOf('世界观设计') >= 0 || (tl.indexOf('world') >= 0 && tl.indexOf('design') >= 0)) {
+            // 设计世界观 → LLM生成 + 自动提取结构
+            var projW = queryOne('SELECT * FROM writing_projects WHERE id=?', [projectId]);
+            var ctxW = '项目名称：'+(projW?projW.title:'')+'\n类型：'+(projW?(projW.genre||'未定'):'')+' '+(projW?(projW.sub_genre||''):'')+'\n';
+            var histW = queryAll('SELECT * FROM agent_conversations WHERE project_id=? ORDER BY created_at ASC LIMIT 100', [projectId]);
+            histW.forEach(function(m) {
+                if (m.role==='user') ctxW += '用户：'+m.content+'\n';
+            });
+            ctxW += '\n用户需求：'+(args.details||args.core_theme||args.genre||'请生成世界观');
+            console.log('[Writing 世界观] 设计开始 项目='+projectId);
+            broadcastDevLog('info','server','[Worldview] 世界观设计开始 project='+projectId);
+            callOutlineLLM(projectId, userId, WORLD_EXTRACTION_SYSTEM.replace('提取实体和关系','设计并提取世界观实体和关系'), ctxW, 'world_design', null, function(result) {
+                if (result.error) { resolve({ error: result.error, summary: '世界观设计失败: '+result.error }); return; }
+                var summary = '世界观已生成';
+                broadcastDevLog('info','server','[Worldview] LLM返回 contentLen='+(result.content||'').length+' thinkingLen='+(result.thinking||'').length);
+                // 尝试提取结构化数据并写入world_entities/world_relations
+                try {
+                    var cleaned = (result.content||'').replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();
+                    var extracted = JSON.parse(cleaned);
+                    broadcastDevLog('info','server','[Worldview] JSON解析成功 实体='+(extracted.实体||[]).length+' 关系='+(extracted.关系||[]).length);
+                    if (extracted.实体 && Array.isArray(extracted.实体) && extracted.实体.length > 0) {
+                        var idMap = {};
+                        extracted.实体.forEach(function(e) {
+                            var name = e.名称||e.name||'未命名';
+                            var type = e.类型||e.type||'';
+                            var desc = e.描述||e.description||'';
+                            var eid = dbRun('INSERT INTO world_entities (project_id, name, type, description, parent_id) VALUES (?,?,?,?,?)', [projectId, name, type, desc, null]);
+                            var tempId = e.临时ID||e.临时ID||e.tempId||String(eid);
+                            idMap[tempId] = eid;
+                            broadcastDevLog('info','server','[Worldview] 实体入库: '+name+' type='+type+' id='+eid);
+                        });
+                        // 回填parent_id
+                        extracted.实体.forEach(function(e) {
+                            var pid = e.父临时ID||e.父临时ID||e.parentTempId||null;
+                            var tempId = e.临时ID||e.临时ID||e.tempId||'';
+                            if (pid && idMap[pid] && idMap[tempId]) {
+                                dbRun('UPDATE world_entities SET parent_id=? WHERE id=?', [idMap[pid], idMap[tempId]]);
+                            }
+                        });
+                        // 写入关系
+                        var relCount = 0;
+                        (extracted.关系||[]).forEach(function(r) {
+                            var fromId = idMap[r.源临时ID||r.fromTempId||''];
+                            var toId = idMap[r.目标临时ID||r.toTempId||''];
+                            if (fromId && toId) {
+                                dbRun('INSERT INTO world_relations (project_id, from_entity_id, to_entity_id, relation_type, description) VALUES (?,?,?,?,?)', [projectId, fromId, toId, r.关系类型||r.relationType||r.relation_type||'', r.描述||r.description||'']);
+                                relCount++;
+                            }
+                        });
+                        saveDB();
+                        summary = '已生成世界观，提取 '+(extracted.实体||[]).length+' 个实体和 '+relCount+' 条关系';
+                        broadcastDevLog('info','server','[Worldview] 完成 实体='+(extracted.实体||[]).length+' 关系='+relCount);
+                    } else {
+                        broadcastDevLog('warn','server','[Worldview] LLM返回了内容但未包含"实体"数组，请检查提示词 keys='+Object.keys(extracted).join(','));
+                        summary = '世界观已生成（但未提取到结构化实体，请确认世界观内容足够详细）';
+                    }
+                } catch(e) {
+                    broadcastDevLog('warn','server','[Worldview] JSON解析失败: '+e.message+' content前200字='+(result.content||'').substring(0,200));
+                    summary = '世界观已生成（结构化提取失败: '+e.message+'，但文本内容已保存）';
+                }
+                resolve({ result: result.content, thinking: result.thinking || '', summary: summary });
+            }, streamCallback, null, true);
+        } else if (tl.indexOf('extract_world') >= 0 || tl.indexOf('世界观提取') >= 0 || tl.indexOf('worldview_structure') >= 0) {
+            // 从已有文本提取世界观结构
+            var textToExtract = args.text || args.content || args.world_text || '';
+            if (!textToExtract || textToExtract.trim().length < 10) {
+                // 没有提供文本 → 从蓝图获取
+                var bpW = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+                if (bpW) {
+                    try {
+                        var bpJson = JSON.parse(bpW.blueprint_json||'{}');
+                        textToExtract = (bpJson.world||{}).era_summary||'';
+                    } catch(e) {}
+                }
+                if (!textToExtract) {
+                    // 最后回退：从对话历史取
+                    var histExt = queryAll('SELECT content FROM agent_conversations WHERE project_id=? AND role=? ORDER BY id DESC LIMIT 20', [projectId, 'user']);
+                    textToExtract = histExt.map(function(m){return m.content;}).join('\n');
+                }
+            }
+            if (!textToExtract || textToExtract.trim().length < 10) {
+                resolve({ error: '无足够的世界观文本用于提取（需≥10字）', summary: '世界观提取失败：缺少文本' });
+                return;
+            }
+            console.log('[Writing 世界观提取] 项目='+projectId+' textLen='+textToExtract.length);
+            broadcastDevLog('info','server','[Worldview] 提取开始 textLen='+textToExtract.length);
+            var extractCtx = '请从以下世界观文本中提取实体和关系：\n\n'+textToExtract.substring(0, 8000);
+            callOutlineLLM(projectId, userId, WORLD_EXTRACTION_SYSTEM, extractCtx, 'world_extraction', null, function(result) {
+                if (result.error) { resolve({ error: result.error, summary: '提取失败: '+result.error }); return; }
+                var summary = '提取完成';
+                try {
+                    var cleaned = (result.content||'').replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();
+                    var extracted = JSON.parse(cleaned);
+                    var idMap = {}, savedE = 0, savedR = 0;
+                    (extracted.实体||[]).forEach(function(e) {
+                        var eid = dbRun('INSERT INTO world_entities (project_id, name, type, description, parent_id) VALUES (?,?,?,?,?)', [projectId, e.名称||e.name||'', e.类型||e.type||'', e.描述||e.description||'', null]);
+                        idMap[e.临时ID||e.临时ID||e.tempId||String(eid)] = eid;
+                        savedE++;
+                    });
+                    (extracted.实体||[]).forEach(function(e) {
+                        var pid = e.父临时ID||e.父临时ID||e.parentTempId||null;
+                        var tempId = e.临时ID||e.临时ID||e.tempId||'';
+                        if (pid && idMap[pid] && idMap[tempId]) {
+                            dbRun('UPDATE world_entities SET parent_id=? WHERE id=?', [idMap[pid], idMap[tempId]]);
+                        }
+                    });
+                    (extracted.关系||[]).forEach(function(r) {
+                        var fromId = idMap[r.源临时ID||r.fromTempId||''];
+                        var toId = idMap[r.目标临时ID||r.toTempId||''];
+                        if (fromId && toId) {
+                            dbRun('INSERT INTO world_relations (project_id, from_entity_id, to_entity_id, relation_type, description) VALUES (?,?,?,?,?)', [projectId, fromId, toId, r.关系类型||r.relationType||r.relation_type||'', r.描述||r.description||'']);
+                            savedR++;
+                        }
+                    });
+                    saveDB();
+                    summary = '已提取 '+savedE+' 个实体和 '+savedR+' 条关系';
+                    broadcastDevLog('info','server','[Worldview] 提取完成 实体='+savedE+' 关系='+savedR);
+                } catch(e) {
+                    broadcastDevLog('warn','server','[Worldview] 提取JSON解析失败: '+e.message);
+                    summary = '提取失败: '+e.message;
+                }
+                resolve({ result: result.content, thinking: result.thinking || '', summary: summary });
+            }, streamCallback, null, true);
         } else if (tl.indexOf('load_skill') >= 0 || tl.indexOf('skill') >= 0) {
             var skillName = args.skill_name || '';
             console.log('[Skill] 查询技能: '+skillName);
@@ -2178,6 +2301,66 @@ app.delete('/api/writing-projects/:id/characters/:cid', auth, (req, res) => {
     res.json({ ok:true });
 });
 
+// ==================== 世界观实体 CRUD ====================
+app.get('/api/writing-projects/:id/world-entities', auth, (req, res) => {
+    const entities = queryAll('SELECT * FROM world_entities WHERE project_id=? ORDER BY id', [req.params.id]);
+    res.json(entities);
+});
+app.post('/api/writing-projects/:id/world-entities', auth, (req, res) => {
+    const { name, type, description, parent_id, metadata_json } = req.body;
+    if (!name) return res.status(400).json({ error:'缺少实体名称' });
+    const id = dbRun('INSERT INTO world_entities (project_id, name, type, description, parent_id, metadata_json) VALUES (?,?,?,?,?,?)', [req.params.id, name, type||'', description||'', parent_id||null, metadata_json||'{}']);
+    saveDB();
+    res.json({ id, name });
+});
+app.put('/api/writing-projects/:id/world-entities/:eid', auth, (req, res) => {
+    const { name, type, description, parent_id, metadata_json } = req.body;
+    var sets=[], params=[];
+    if (name!==undefined){sets.push('name=?');params.push(name);}
+    if (type!==undefined){sets.push('type=?');params.push(type);}
+    if (description!==undefined){sets.push('description=?');params.push(description);}
+    if (parent_id!==undefined){sets.push('parent_id=?');params.push(parent_id);}
+    if (metadata_json!==undefined){sets.push('metadata_json=?');params.push(metadata_json);}
+    if (sets.length){sets.push('updated_at=CURRENT_TIMESTAMP');params.push(req.params.eid);dbRun('UPDATE world_entities SET '+sets.join(',')+' WHERE id=?',params);saveDB();}
+    res.json({ ok:true });
+});
+app.delete('/api/writing-projects/:id/world-entities/:eid', auth, (req, res) => {
+    dbRun('DELETE FROM world_entities WHERE id=?', [req.params.eid]);
+    dbRun('DELETE FROM world_relations WHERE from_entity_id=? OR to_entity_id=?', [req.params.eid, req.params.eid]);
+    saveDB();
+    res.json({ ok:true });
+});
+
+// ==================== 世界观关系 CRUD ====================
+app.get('/api/writing-projects/:id/world-relations', auth, (req, res) => {
+    const rels = queryAll('SELECT wr.*, fe.name AS from_name, te.name AS to_name FROM world_relations wr LEFT JOIN world_entities fe ON wr.from_entity_id=fe.id LEFT JOIN world_entities te ON wr.to_entity_id=te.id WHERE wr.project_id=? ORDER BY wr.id', [req.params.id]);
+    res.json(rels);
+});
+app.post('/api/writing-projects/:id/world-relations', auth, (req, res) => {
+    const { from_entity_id, to_entity_id, relation_type, description, intensity, metadata_json } = req.body;
+    if (!from_entity_id || !to_entity_id) return res.status(400).json({ error:'缺少关联实体ID' });
+    const id = dbRun('INSERT INTO world_relations (project_id, from_entity_id, to_entity_id, relation_type, description, intensity, metadata_json) VALUES (?,?,?,?,?,?,?)', [req.params.id, from_entity_id, to_entity_id, relation_type||'', description||'', intensity||5, metadata_json||'{}']);
+    saveDB();
+    res.json({ id });
+});
+app.put('/api/writing-projects/:id/world-relations/:rid', auth, (req, res) => {
+    const { from_entity_id, to_entity_id, relation_type, description, intensity, metadata_json } = req.body;
+    var sets=[], params=[];
+    if (from_entity_id!==undefined){sets.push('from_entity_id=?');params.push(from_entity_id);}
+    if (to_entity_id!==undefined){sets.push('to_entity_id=?');params.push(to_entity_id);}
+    if (relation_type!==undefined){sets.push('relation_type=?');params.push(relation_type);}
+    if (description!==undefined){sets.push('description=?');params.push(description);}
+    if (intensity!==undefined){sets.push('intensity=?');params.push(intensity);}
+    if (metadata_json!==undefined){sets.push('metadata_json=?');params.push(metadata_json);}
+    if (sets.length){sets.push('updated_at=CURRENT_TIMESTAMP');params.push(req.params.rid);dbRun('UPDATE world_relations SET '+sets.join(',')+' WHERE id=?',params);saveDB();}
+    res.json({ ok:true });
+});
+app.delete('/api/writing-projects/:id/world-relations/:rid', auth, (req, res) => {
+    dbRun('DELETE FROM world_relations WHERE id=?', [req.params.rid]);
+    saveDB();
+    res.json({ ok:true });
+});
+
 // ==================== 角色Agent ====================
 var CHARACTER_SYSTEM = '你是小说角色设计专家。根据用户提供的小说信息和大纲，设计角色档案。\n\n'+
 '## 输出格式\n'+
@@ -2218,6 +2401,183 @@ app.post('/api/writing-projects/:id/generate-characters', auth, (req, res) => {
     callOutlineLLM(projectId, req.userId, CHARACTER_SYSTEM, context, 'character', req, function(result) {
         if (result.error) return res.status(500).json({ error:result.error });
         res.json(result);
+    });
+});
+
+// ==================== 世界观提取Agent ====================
+var WORLD_EXTRACTION_SYSTEM = '你是小说世界观结构化提取专家。根据用户提供的世界观文本，提取实体和关系。\n\n'+
+'## 输出格式\n'+
+'请严格输出以下JSON（不要加任何解释文字）：\n'+
+'```json\n'+
+'{\n'+
+'  "实体": [{\n'+
+'    "临时ID":"e1",\n'+
+'    "名称":"沧玄界",\n'+
+'    "类型":"世界",\n'+
+'    "描述":"详细描述",\n'+
+'    "父临时ID":null\n'+
+'  }],\n'+
+'  "关系": [{\n'+
+'    "源临时ID":"e2",\n'+
+'    "目标临时ID":"e3",\n'+
+'    "关系类型":"敌对",\n'+
+'    "描述":"关系说明"\n'+
+'  }]\n'+
+'}\n'+
+'```\n\n'+
+'## 类型枚举\n'+
+'实体类型必须是以下之一：世界、势力、地点、力量等级、物种、人物、物品、概念、事件\n'+
+'关系类型必须是以下之一：敌对、同盟、从属、师徒、亲属、竞争、中立、克制\n\n'+
+'## 规则\n'+
+'- 每个势力/地点/力量体系/物种作为独立实体，parent_id指向所属上层实体\n'+
+'- 人物属于某个势力或地点\n'+
+'- 关系只在有明确关联的实体间建立，不要强行配对所有实体\n'+
+'- 父临时ID用于构建树形层级，null表示根节点';
+
+app.post('/api/writing-projects/:id/extract-world', auth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const { text, autoSave } = req.body; // autoSave=true 时直接写入DB
+    if (!text || text.trim().length < 10) return res.status(400).json({ error:'世界观文本过短，至少10字' });
+    var proj = queryOne('SELECT * FROM writing_projects WHERE id=? AND user_id=?', [projectId, req.userId]);
+    if (!proj) return res.status(404).json({ error:'项目不存在' });
+    console.log('[Writing 世界观提取] 项目='+projectId+' 文本长度='+text.length);
+    var context = '项目名称：'+proj.title+'\n类型：'+proj.genre+' '+proj.sub_genre+'\n\n请从以下世界观文本中提取实体和关系：\n\n'+text;
+    callOutlineLLM(projectId, req.userId, WORLD_EXTRACTION_SYSTEM, context, 'world_extraction', req, function(result) {
+        if (result.error) return res.status(500).json({ error:result.error });
+        var extracted = null;
+        try {
+            var cleaned = result.content.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();
+            extracted = JSON.parse(cleaned);
+        } catch(e) {
+            console.log('[Writing 世界观提取] JSON解析失败，尝试修复:', e.message);
+            return res.status(500).json({ error:'LLM返回格式异常，无法解析为JSON', raw:result.content.substring(0,500) });
+        }
+        if (!extracted.实体 || !Array.isArray(extracted.实体)) {
+            return res.status(500).json({ error:'LLM返回缺少"实体"数组', raw:result.content.substring(0,500) });
+        }
+        // 建立临时ID→真实ID映射
+        var idMap = {};
+        var savedEntities = [];
+        if (autoSave) {
+            // 先插入所有实体
+            (extracted.实体||[]).forEach(function(e) {
+                var eid = dbRun('INSERT INTO world_entities (project_id, name, type, description, parent_id) VALUES (?,?,?,?,?)', [projectId, e.名称||e.name||'', e.类型||e.type||'', e.描述||e.description||'', null]);
+                idMap[e.临时ID||e.临时ID||e.tempId||''] = eid;
+                savedEntities.push({ id:eid, name:e.名称||e.name });
+            });
+            // 回填parent_id
+            (extracted.实体||[]).forEach(function(e) {
+                var pid = e.父临时ID||e.父临时ID||e.parentTempId||null;
+                if (pid && idMap[pid] && idMap[e.临时ID||e.临时ID||e.tempId||'']) {
+                    dbRun('UPDATE world_entities SET parent_id=? WHERE id=?', [idMap[pid], idMap[e.临时ID||e.临时ID||e.tempId||'']]);
+                }
+            });
+            // 插入关系
+            var savedRelations = [];
+            (extracted.关系||[]).forEach(function(r) {
+                var fromId = idMap[r.源临时ID||r.fromTempId||''];
+                var toId = idMap[r.目标临时ID||r.toTempId||''];
+                if (fromId && toId) {
+                    var rid = dbRun('INSERT INTO world_relations (project_id, from_entity_id, to_entity_id, relation_type, description) VALUES (?,?,?,?,?)', [projectId, fromId, toId, r.关系类型||r.relationType||r.relation_type||'', r.描述||r.description||'']);
+                    savedRelations.push({ id:rid, from:fromId, to:toId, type:r.关系类型||r.relationType||'' });
+                }
+            });
+            saveDB();
+            console.log('[Writing 世界观提取] 已保存 实体='+savedEntities.length+' 关系='+savedRelations.length);
+            res.json({ entities:savedEntities, relations:savedRelations, idMap:idMap });
+        } else {
+            // 不自动保存，只返回解析结果供前端预览
+            res.json({ entities:extracted.实体, relations:extracted.关系||[], preview:true });
+        }
+    });
+});
+
+// 批量保存世界观实体/关系（前端预览编辑后确认）
+app.post('/api/writing-projects/:id/world-bulk-save', auth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const { entities, relations } = req.body;
+    if (!entities || !Array.isArray(entities)) return res.status(400).json({ error:'缺少entities数组' });
+    // 先插入所有实体，建立临时ID→真实ID映射
+    var idMap = {};
+    var savedEntities = [];
+    (entities||[]).forEach(function(e) {
+        var eid = dbRun('INSERT INTO world_entities (project_id, name, type, description, parent_id) VALUES (?,?,?,?,?)', [projectId, e.name||'', e.type||'', e.description||'', null]);
+        idMap[e.tempId||e.临时ID||''] = eid;
+        savedEntities.push({ id:eid, name:e.name, tempId:e.tempId||e.临时ID });
+    });
+    // 回填parent_id
+    (entities||[]).forEach(function(e) {
+        var pid = e.parentTempId||e.父临时ID||null;
+        if (pid && idMap[pid] && idMap[e.tempId||e.临时ID||'']) {
+            dbRun('UPDATE world_entities SET parent_id=? WHERE id=?', [idMap[pid], idMap[e.tempId||e.临时ID||'']]);
+        }
+    });
+    // 插入关系
+    var savedRelations = [];
+    (relations||[]).forEach(function(r) {
+        var fromId = idMap[r.fromTempId||r.源临时ID||''];
+        var toId = idMap[r.toTempId||r.目标临时ID||''];
+        if (fromId && toId) {
+            var rid = dbRun('INSERT INTO world_relations (project_id, from_entity_id, to_entity_id, relation_type, description) VALUES (?,?,?,?,?)', [projectId, fromId, toId, r.type||r.关系类型||'', r.description||r.描述||'']);
+            savedRelations.push({ id:rid });
+        }
+    });
+    saveDB();
+    console.log('[Writing] 批量保存 实体='+savedEntities.length+' 关系='+savedRelations.length);
+    res.json({ entities:savedEntities, relations:savedRelations, idMap:idMap });
+});
+
+// 存量蓝图回填：已有项目文本→LLM提取→world_entities
+app.post('/api/writing-projects/:id/backfill-world', auth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    var proj = queryOne('SELECT * FROM writing_projects WHERE id=? AND user_id=?', [projectId, req.userId]);
+    if (!proj) return res.status(404).json({ error:'项目不存在' });
+    // 收集项目中的世界观相关文本
+    var bp = queryOne('SELECT * FROM story_blueprints WHERE project_id=? ORDER BY version DESC LIMIT 1', [projectId]);
+    var bpJson = bp ? JSON.parse(bp.blueprint_json||'{}') : {};
+    var worldText = (bpJson.world||{}).era_summary||'';
+    if (!worldText) {
+        // 回退：从对话历史中提取
+        var history = queryAll('SELECT content FROM agent_conversations WHERE project_id=? AND role=? ORDER BY created_at DESC LIMIT 50', [projectId, 'user']);
+        worldText = history.map(function(m){return m.content;}).join('\n');
+    }
+    if (!worldText || worldText.trim().length < 20) {
+        return res.status(400).json({ error:'项目暂无足够的世界观文本用于提取（需≥20字）' });
+    }
+    console.log('[Writing 回填] 项目='+projectId+' 文本长度='+worldText.length);
+    var context = '项目名称：'+proj.title+'\n类型：'+proj.genre+' '+proj.sub_genre+'\n\n请从以下文本中提取世界观实体和关系：\n\n'+worldText.substring(0,8000);
+    callOutlineLLM(projectId, req.userId, WORLD_EXTRACTION_SYSTEM, context, 'world_backfill', req, function(result) {
+        if (result.error) return res.status(500).json({ error:result.error });
+        var extracted = null;
+        try {
+            var cleaned = result.content.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();
+            extracted = JSON.parse(cleaned);
+        } catch(e) {
+            return res.status(500).json({ error:'LLM返回格式异常', raw:result.content.substring(0,300) });
+        }
+        var idMap = {}, savedE = [], savedR = [];
+        (extracted.实体||[]).forEach(function(e) {
+            var eid = dbRun('INSERT INTO world_entities (project_id, name, type, description, parent_id) VALUES (?,?,?,?,?)', [projectId, e.名称||e.name||'', e.类型||e.type||'', e.描述||e.description||'', null]);
+            idMap[e.临时ID||e.临时ID||e.tempId||''] = eid;
+            savedE.push({ id:eid, name:e.名称||e.name });
+        });
+        (extracted.实体||[]).forEach(function(e) {
+            var pid = e.父临时ID||e.父临时ID||e.parentTempId||null;
+            if (pid && idMap[pid] && idMap[e.临时ID||e.临时ID||e.tempId||'']) {
+                dbRun('UPDATE world_entities SET parent_id=? WHERE id=?', [idMap[pid], idMap[e.临时ID||e.临时ID||e.tempId||'']]);
+            }
+        });
+        (extracted.关系||[]).forEach(function(r) {
+            var fromId = idMap[r.源临时ID||r.fromTempId||''];
+            var toId = idMap[r.目标临时ID||r.toTempId||''];
+            if (fromId && toId) {
+                dbRun('INSERT INTO world_relations (project_id, from_entity_id, to_entity_id, relation_type, description) VALUES (?,?,?,?,?)', [projectId, fromId, toId, r.关系类型||r.relationType||r.relation_type||'', r.描述||r.description||'']);
+                savedR.push({ from:fromId, to:toId });
+            }
+        });
+        saveDB();
+        console.log('[Writing 回填] 完成 实体='+savedE.length+' 关系='+savedR.length);
+        res.json({ entities:savedE, relations:savedR, sourceLength:worldText.length });
     });
 });
 
@@ -3578,15 +3938,19 @@ async function start() {
     db.run('CREATE TABLE IF NOT EXISTS writing_projects (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT DEFAULT \'未命名写作\', genre TEXT DEFAULT \'\', sub_genre TEXT DEFAULT \'\', target_words INTEGER DEFAULT 0, style_ref TEXT DEFAULT \'\', status TEXT DEFAULT \'drafting\', branch_active TEXT DEFAULT \'main\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_volumes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, volume_no INTEGER DEFAULT 1, title TEXT DEFAULT \'\', summary TEXT DEFAULT \'\', status TEXT DEFAULT \'draft\', sort_order REAL DEFAULT 0)');
     db.run('CREATE TABLE IF NOT EXISTS writing_chapters (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, volume_id INTEGER, chapter_no INTEGER DEFAULT 1, title TEXT DEFAULT \'\', content_text TEXT DEFAULT \'\', word_count INTEGER DEFAULT 0, status TEXT DEFAULT \'draft\', branch_name TEXT DEFAULT \'main\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
-    db.run('CREATE TABLE IF NOT EXISTS writing_characters (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, aliases TEXT DEFAULT \'\', profile_json TEXT DEFAULT \'{}\', canvas_node_ids TEXT DEFAULT \'[]\', avatar_url TEXT DEFAULT \'\', status TEXT DEFAULT \'active\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS writing_characters (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, aliases TEXT DEFAULT \'\', profile_json TEXT DEFAULT \'{}\', canvas_node_ids TEXT DEFAULT \'[]\', avatar_url TEXT DEFAULT \'\', status TEXT DEFAULT \'active\', is_protagonist INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_scenes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT \'\', atmosphere TEXT DEFAULT \'\', canvas_node_ids TEXT DEFAULT \'[]\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_props (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT \'\', canvas_node_ids TEXT DEFAULT \'[]\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS character_memories (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, character_id INTEGER, memory_type TEXT DEFAULT \'base_profile\', content TEXT DEFAULT \'\', importance INTEGER DEFAULT 3, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, expires_at TEXT)');
     db.run('CREATE TABLE IF NOT EXISTS relationship_edges (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, from_character_id INTEGER, to_character_id INTEGER, relation_type TEXT DEFAULT \'custom\', description TEXT DEFAULT \'\', intensity INTEGER DEFAULT 5, status TEXT DEFAULT \'active\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
-    db.run('CREATE TABLE IF NOT EXISTS plot_timeline_events (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_name TEXT NOT NULL, summary TEXT DEFAULT \'\', character_ids TEXT DEFAULT \'[]\', chapter_id INTEGER, order_index REAL DEFAULT 0, branch_name TEXT DEFAULT \'main\', event_type TEXT DEFAULT \'minor\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    db.run('CREATE TABLE IF NOT EXISTS plot_timeline_events (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_name TEXT NOT NULL, summary TEXT DEFAULT \'\', character_ids TEXT DEFAULT \'[]\', chapter_id INTEGER, order_index REAL DEFAULT 0, branch_name TEXT DEFAULT \'main\', event_type TEXT DEFAULT \'minor\', absolute_year REAL DEFAULT NULL, era_name TEXT DEFAULT \'\', faction_calendars TEXT DEFAULT \'{}\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS foreshadowing (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT \'\', status TEXT DEFAULT \'planted\', plant_chapter_id INTEGER, resolve_chapter_id INTEGER, notes TEXT DEFAULT \'\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT)');
     db.run('CREATE TABLE IF NOT EXISTS writing_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, branch_name TEXT DEFAULT \'main\', parent_version_id INTEGER, snapshot_json TEXT NOT NULL, message TEXT DEFAULT \'\', commit_type TEXT DEFAULT \'manual\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_merge_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, source_branch TEXT, target_branch TEXT, conflicts_json TEXT DEFAULT \'[]\', resolution_json TEXT DEFAULT \'{}\', status TEXT DEFAULT \'pending\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT)');
+    // 世界观实体表（树形层级：势力/地点/力量体系/物种/人物等）
+    db.run('CREATE TABLE IF NOT EXISTS world_entities (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, type TEXT DEFAULT \'\', description TEXT DEFAULT \'\', parent_id INTEGER DEFAULT NULL, metadata_json TEXT DEFAULT \'{}\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+    // 世界观关系表（实体间关系：敌对/同盟/从属等）
+    db.run('CREATE TABLE IF NOT EXISTS world_relations (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, from_entity_id INTEGER NOT NULL, to_entity_id INTEGER NOT NULL, relation_type TEXT DEFAULT \'\', description TEXT DEFAULT \'\', intensity INTEGER DEFAULT 5, metadata_json TEXT DEFAULT \'{}\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS user_behavior_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER, action_type TEXT NOT NULL, target_type TEXT, target_id INTEGER, before_data TEXT, after_data TEXT, metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS chapter_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, chapter_id INTEGER NOT NULL, content_text TEXT DEFAULT \'\', word_count INTEGER DEFAULT 0, save_type TEXT DEFAULT \'manual\', label TEXT DEFAULT \'\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     db.run('CREATE TABLE IF NOT EXISTS writing_quality_ratings (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, chapter_id INTEGER, user_rating INTEGER, edit_distance_ratio REAL, ai_similarity_score REAL, agent_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
@@ -3994,6 +4358,11 @@ app.put('/api/writing-projects/:id/agent-api-config', auth, (req, res) => {
     try { db.run('ALTER TABLE writing_agent_config ADD COLUMN retrieval_api_key TEXT DEFAULT \'\''); } catch(e) {}
     try { db.run('ALTER TABLE token_usage_logs ADD COLUMN cache_tokens INTEGER DEFAULT 0'); } catch(e) {}
     try { db.run('ALTER TABLE token_usage_logs ADD COLUMN cost_cache REAL DEFAULT 0.0'); } catch(e) {}
+    // 阶段二：数据基建——写作模块字段扩展
+    try { db.run('ALTER TABLE writing_characters ADD COLUMN is_protagonist INTEGER DEFAULT 0'); } catch(e) {}
+    try { db.run('ALTER TABLE plot_timeline_events ADD COLUMN absolute_year REAL DEFAULT NULL'); } catch(e) {}
+    try { db.run('ALTER TABLE plot_timeline_events ADD COLUMN era_name TEXT DEFAULT \'\''); } catch(e) {}
+    try { db.run('ALTER TABLE plot_timeline_events ADD COLUMN faction_calendars TEXT DEFAULT \'{}\''); } catch(e) {}
     // pinned_snapshot 需要重建（约束变更）
     try { db.run('DROP TABLE IF EXISTS pinned_snapshot_old'); } catch(e) {}
     try {

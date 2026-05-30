@@ -3263,20 +3263,20 @@ var BLUEPRINT = {
       { label: '当前阶段', value: bp.protagonist.current_stage },
       { label: '核心特质', value: (bp.protagonist.key_traits||[]).join('、') },
       { label: '核心冲突', value: bp.protagonist.core_conflict }
-    ], 'protagonist');
+    ], 'protagonist', 'character');
     // 世界观
     html += _bpSection('🌍 世界观', [
       { label: '力量体系', value: bp.world.power_system },
       { label: '时代概要', value: bp.world.era_summary },
       { label: '主要势力', value: (bp.world.key_factions||[]).join('、') },
       { label: '待解决问题', value: (bp.world.pending_questions||[]).join('；') }
-    ], 'world');
+    ], 'world', 'world');
     // 情节
     html += _bpSection('📖 情节', [
       { label: '主线', value: bp.plot.main_thread },
       { label: '支线', value: (bp.plot.sub_threads||[]).map(function(s){ return s.name+' ('+(s.status||'')+')'; }).join('<br>') },
       { label: '伏笔', value: (bp.plot.foreshadowing||[]).map(function(f){ return f.name+' ['+(f.status||'')+']'; }).join('<br>') }
-    ], 'plot');
+    ], 'plot', 'timeline');
     // 进度
     html += _bpSection('📊 进度', [
       { label: '当前卷/章', value: '第'+bp.outline_progress.current_volume+'卷 第'+bp.outline_progress.current_chapter+'章' },
@@ -3347,10 +3347,14 @@ var BLUEPRINT = {
 };
 
 var _bpSectionCounter = 0;
-function _bpSection(title, fields, sectionKey) {
+function _bpSection(title, fields, sectionKey, canvasTab) {
   var id = 'bps_' + (++_bpSectionCounter);
   sectionKey = sectionKey || id;
-  var html = '<div class="bp-card"><div class="bp-card-hdr" onclick="var b=document.getElementById(\''+id+'\');b.style.display=b.style.display==\'none\'?\'\':\'none\'"><span>'+title+'</span><span class="bp-clear-btn" title="清除此设定" onclick="event.stopPropagation();BLUEPRINT.clearSection(\''+sectionKey+'\')">🗑</span></div>';
+  var canvasBtn = '';
+  if (canvasTab) {
+    canvasBtn = '<span class="bp-card-icon" title="打开浮动画布" onclick="event.stopPropagation();FLOATING_CANVAS.open(\''+canvasTab+'\')">🔍</span>';
+  }
+  var html = '<div class="bp-card"><div class="bp-card-hdr" onclick="var b=document.getElementById(\''+id+'\');b.style.display=b.style.display==\'none\'?\'\':\'none\'"><span>'+title+'</span>'+canvasBtn+'<span class="bp-clear-btn" title="清除此设定" onclick="event.stopPropagation();BLUEPRINT.clearSection(\''+sectionKey+'\')">🗑</span></div>';
   html += '<div class="bp-card-body" id="'+id+'">';
   var hasContent = false;
   fields.forEach(function(f) {
@@ -3373,6 +3377,543 @@ function _emptyBlueprintClient() {
     outline_progress: { current_volume: 1, current_chapter: 1, chapters_written: 0, next_chapter_hook: '' }
   };
 }
+
+// ===== 浮动画布模块 =====
+var FLOATING_CANVAS = {
+  _activeTab: 'world',
+  _locked: true,
+  _scale: 1,
+  _panX: 0,
+  _panY: 0,
+  _data: { entities: [], relations: [], characters: [], timeline: [], relationships: [] },
+  _escHandler: null,
+  _dragState: null,
+
+  open: function(tab) {
+    var self = this;
+    var overlay = document.getElementById('fc-overlay');
+    // 默认尺寸和位置
+    if (!overlay.style.width) overlay.style.width = '700px';
+    if (!overlay.style.height) overlay.style.height = '500px';
+    // 确保不超出视口
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var curLeft = parseInt(overlay.style.left) || 120;
+    var curTop = parseInt(overlay.style.top) || 60;
+    var curW = parseInt(overlay.style.width) || 700;
+    var curH = parseInt(overlay.style.height) || 500;
+    if (curLeft + curW > vw) overlay.style.left = Math.max(10, vw - curW - 20) + 'px';
+    if (curTop + curH > vh) overlay.style.top = Math.max(10, vh - curH - 20) + 'px';
+    overlay.classList.add('show');
+    this._scale = 1; this._panX = 0; this._panY = 0; this._locked = true;
+    document.getElementById('fc-viewport').classList.remove('unlocked');
+    document.getElementById('fc-hint').textContent = '💡 双击画布解锁 | 拖拽标题栏移动 | 右下角调整大小';
+    this.switchTab(tab || 'world');
+    this._escHandler = function(e) { if (e.key === 'Escape') self.close(); };
+    document.addEventListener('keydown', this._escHandler);
+    this._initDrag();
+  },
+  close: function() {
+    document.getElementById('fc-overlay').classList.remove('show');
+    if (this._escHandler) { document.removeEventListener('keydown', this._escHandler); this._escHandler = null; }
+  },
+
+  // 窗口拖拽
+  _initDrag: function() {
+    var self = this;
+    var overlay = document.getElementById('fc-overlay');
+    var header = document.getElementById('fc-header');
+    var canvas = document.getElementById('fc-canvas');
+    header.onmousedown = function(e) {
+      if (e.target.tagName === 'BUTTON' || e.target.id === 'fc-close') return;
+      e.preventDefault();
+      self._dragState = { sx: e.clientX - overlay.offsetLeft, sy: e.clientY - overlay.offsetTop };
+      canvas.classList.add('fc-dragging');
+      document.body.style.userSelect = 'none';
+    };
+    window.addEventListener('mousemove', function(e) {
+      if (!self._dragState) return;
+      var nx = e.clientX - self._dragState.sx, ny = e.clientY - self._dragState.sy;
+      var vw = window.innerWidth, vh = window.innerHeight;
+      var ow = overlay.offsetWidth, oh = overlay.offsetHeight;
+      nx = Math.max(0, Math.min(nx, vw - 60));
+      ny = Math.max(0, Math.min(ny, vh - 40));
+      overlay.style.left = nx + 'px'; overlay.style.top = ny + 'px';
+    });
+    window.addEventListener('mouseup', function() {
+      if (self._dragState) {
+        self._dragState = null;
+        canvas.classList.remove('fc-dragging');
+        document.body.style.userSelect = '';
+      }
+    });
+  },
+  switchTab: function(tab) {
+    this._activeTab = tab;
+    document.querySelectorAll('#fc-tabs .fc-tab').forEach(function(el) {
+      el.classList.toggle('active', el.dataset.tab === tab);
+    });
+    this._scale = 1; this._panX = 0; this._panY = 0;
+    this._loadAndRender();
+  },
+
+  _log: function(tag, msg, level) {
+    level = level || 'info';
+    var prefix = '[FloatingCanvas]';
+    console.log(prefix+'['+tag+'] '+msg);
+    // 开发者日志（如果全局DL可用）
+    if (typeof DL !== 'undefined' && DL.log) {
+      DL.log(level, 'fc', prefix+' '+tag+': '+msg);
+    }
+  },
+
+  _loadAndRender: function() {
+    var self = this;
+    var svg = document.getElementById('fc-svg');
+    var loading = document.getElementById('fc-loading');
+    var empty = document.getElementById('fc-empty');
+    svg.innerHTML = ''; loading.style.display = 'flex'; empty.style.display = 'none';
+    var tab = this._activeTab;
+    var headers = { 'Authorization': 'Bearer ' + token };
+    if (tab === 'world') {
+      fetch(API + '/writing-projects/' + projectId + '/world-entities', { headers: headers })
+        .then(function(r) { return r.json(); })
+        .then(function(entities) {
+          self._log('world', 'API返回实体: ' + JSON.stringify(entities).substring(0, 300) + ' | API returned ' + (entities.error ? 'error: ' + entities.error : (Array.isArray(entities) ? entities.length + ' entities' : 'unexpected format')));
+          self._data.entities = entities.error ? [] : entities;
+          return fetch(API + '/writing-projects/' + projectId + '/world-relations', { headers: headers });
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(rels) {
+          self._data.relations = rels.error ? [] : rels;
+          self._log('world', '实体数=' + self._data.entities.length + ' 关系数=' + self._data.relations.length + ' | entities=' + self._data.entities.length + ' relations=' + self._data.relations.length);
+          loading.style.display = 'none';
+          if (!self._data.entities.length) {
+            empty.style.display = 'flex';
+            self._log('world', '⚠ 无世界观数据！请在对话中让智能体生成世界观内容 | No world data! Ask the AI agent to generate worldbuilding content', 'warn');
+            return;
+          }
+          self._renderWorldTree();
+        })
+        .catch(function(err) {
+          loading.style.display = 'none'; empty.style.display = 'flex';
+          self._log('world', '❌ 数据加载失败 | Load failed: ' + err.message, 'error');
+        });
+    } else if (tab === 'character') {
+      fetch(API + '/writing-projects/' + projectId + '/characters', { headers: headers })
+        .then(function(r) { return r.json(); })
+        .then(function(chars) {
+          self._data.characters = chars.error ? [] : chars;
+          self._log('character', 'API返回角色: ' + self._data.characters.length + '个 | characters returned: ' + self._data.characters.length);
+          return fetch(API + '/writing-projects/' + projectId + '/relationships', { headers: headers });
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(rels) {
+          self._data.relationships = rels.error ? [] : rels;
+          self._log('character', '关系数=' + self._data.relationships.length + ' | relations=' + self._data.relationships.length);
+          loading.style.display = 'none';
+          if (!self._data.characters.length) {
+            empty.style.display = 'flex';
+            self._log('character', '⚠ 无角色数据！请先生成角色 | No character data! Generate characters first', 'warn');
+            return;
+          }
+          self._renderCharacterConstellation();
+        })
+        .catch(function(err) {
+          loading.style.display = 'none'; empty.style.display = 'flex';
+          self._log('character', '❌ 加载失败 | Load failed: ' + err.message, 'error');
+        });
+    } else if (tab === 'timeline') {
+      fetch(API + '/writing-projects/' + projectId + '/timeline', { headers: headers })
+        .then(function(r) { return r.json(); })
+        .then(function(tl) {
+          self._data.timeline = tl.error ? [] : tl;
+          self._log('timeline', 'API返回事件: ' + self._data.timeline.length + '个 | events returned: ' + self._data.timeline.length);
+          loading.style.display = 'none';
+          if (!self._data.timeline.length) {
+            empty.style.display = 'flex';
+            self._log('timeline', '⚠ 无时间线数据！请先生成大纲 | No timeline data! Generate outline first', 'warn');
+            return;
+          }
+          self._renderTimeline();
+        })
+        .catch(function(err) {
+          loading.style.display = 'none'; empty.style.display = 'flex';
+          self._log('timeline', '❌ 加载失败 | Load failed: ' + err.message, 'error');
+        });
+    }
+  },
+
+  // ========== 视口交互 ==========
+  _initViewport: function() {
+    var self = this;
+    var vp = document.getElementById('fc-viewport');
+    vp.onwheel = function(e) {
+      e.preventDefault();
+      var delta = e.deltaY > 0 ? 0.9 : 1.1;
+      var newScale = Math.max(0.2, Math.min(5, self._scale * delta));
+      var rect = vp.getBoundingClientRect();
+      var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      self._panX = mx - (mx - self._panX) * (newScale / self._scale);
+      self._panY = my - (my - self._panY) * (newScale / self._scale);
+      self._scale = newScale;
+      self._clampPan();
+      self._applyTransform();
+      self._updateCoord();
+    };
+    vp.ondblclick = function() {
+      self._locked = !self._locked;
+      vp.classList.toggle('unlocked', !self._locked);
+      document.getElementById('fc-hint').textContent = self._locked ? '💡 双击画布解锁拖拽+缩放' : '🔓 已解锁：可拖拽平移+缩放 · 双击锁定';
+    };
+    var dragging = false, sx = 0, sy = 0;
+    vp.onmousedown = function(e) {
+      if (self._locked) return;
+      dragging = true; sx = e.clientX - self._panX; sy = e.clientY - self._panY;
+    };
+    window.addEventListener('mousemove', function(e) {
+      if (!dragging) return;
+      self._panX = e.clientX - sx; self._panY = e.clientY - sy;
+      self._clampPan();
+      self._applyTransform(); self._updateCoord();
+    });
+    window.addEventListener('mouseup', function() { dragging = false; });
+  },
+
+  _applyTransform: function() {
+    var g = document.querySelector('#fc-svg g.fc-world');
+    if (g) g.setAttribute('transform', 'translate(' + this._panX + ',' + this._panY + ') scale(' + this._scale + ')');
+  },
+
+  _clampPan: function() {
+    var maxPan = 2000 * this._scale;
+    this._panX = Math.max(-maxPan, Math.min(maxPan, this._panX));
+    this._panY = Math.max(-maxPan, Math.min(maxPan, this._panY));
+  },
+
+  _updateCoord: function() {
+    document.getElementById('fc-coord').textContent = '缩放:' + (this._scale * 100).toFixed(0) + '%  X:' + this._panX.toFixed(0) + ' Y:' + this._panY.toFixed(0);
+  },
+
+  // ========== 世界观层级树 ==========
+  _buildTree: function() {
+    var entities = this._data.entities;
+    var map = {}, roots = [];
+    entities.forEach(function(e) { map[e.id] = { id: e.id, name: e.name, type: e.type, description: e.description, parent_id: e.parent_id, children: [], collapsed: false, x: 0, y: 0 }; });
+    entities.forEach(function(e) {
+      var node = map[e.id];
+      if (e.parent_id && map[e.parent_id]) { map[e.parent_id].children.push(node); }
+      else if (!e.parent_id) { roots.push(node); }
+    });
+    if (!roots.length && entities.length) roots = entities.map(function(e) { return map[e.id]; });
+    return { roots: roots, map: map };
+  },
+
+  _layoutTree: function(node, x, y, gapX, gapY) {
+    node.x = x; node.y = y;
+    if (node.collapsed || !node.children.length) return { w: 1 };
+    var totalW = 0, childY = y + gapY;
+    node.children.forEach(function(child) {
+      var sub = this._layoutTree(child, x + totalW, childY, gapX, gapY);
+      totalW += Math.max(sub.w * gapX, gapX);
+    }.bind(this));
+    if (node.children.length > 1) {
+      var first = node.children[0], last = node.children[node.children.length - 1];
+      node.x = (first.x + last.x) / 2;
+    }
+    return { w: Math.max(1, totalW / gapX) };
+  },
+
+  _renderWorldTree: function() {
+    var self = this;
+    var svg = document.getElementById('fc-svg');
+    var vp = document.getElementById('fc-viewport');
+    var W = vp.clientWidth, H = vp.clientHeight;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.innerHTML = '';
+    var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'fc-world');
+    svg.appendChild(g);
+    var tree = this._buildTree();
+    if (!tree.roots.length) return;
+    var gapX = 160, gapY = 90;
+    var totalH = 0;
+    tree.roots.forEach(function(root) {
+      root.x = 60; root.y = totalH + 40;
+      var sub = self._layoutTree(root, root.x, root.y, gapX, gapY);
+      totalH += Math.max(sub.w * gapY + 40, 120);
+    });
+    var drawn = new Set();
+    function drawEdges(node) {
+      node.children.forEach(function(child) {
+        var key = node.id + '-' + child.id;
+        if (!drawn.has(key)) {
+          var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          var sx = node.x + 80, sy = node.y + 22;
+          var ex = child.x + 80, ey = child.y + 5;
+          var d = 'M' + sx + ',' + sy + ' C' + sx + ',' + ((sy + ey) / 2) + ' ' + ex + ',' + ((sy + ey) / 2) + ' ' + ex + ',' + ey;
+          path.setAttribute('d', d); path.setAttribute('class', 'fc-edge tree-line');
+          g.appendChild(path); drawn.add(key);
+        }
+        drawEdges(child);
+      });
+    }
+    tree.roots.forEach(drawEdges);
+    function drawNode(node, isRoot) {
+      var w = Math.max(140, node.name.length * 14 + 30);
+      var cls = isRoot ? 'world-root' : (node.children.length ? 'world-branch' : 'world-leaf');
+      var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', node.x); rect.setAttribute('y', node.y);
+      rect.setAttribute('width', w); rect.setAttribute('height', 38);
+      rect.setAttribute('rx', 6); rect.setAttribute('class', 'fc-node ' + cls);
+      rect.onclick = function() { node.collapsed = !node.collapsed; self._renderWorldTree(); };
+      g.appendChild(rect);
+      if (node.children.length) {
+        var ind = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        ind.setAttribute('x', node.x + 6); ind.setAttribute('y', node.y + 24);
+        ind.setAttribute('class', 'fc-node-sub'); ind.textContent = node.collapsed ? '▶' : '▼';
+        g.appendChild(ind);
+      }
+      var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', node.x + w / 2); text.setAttribute('y', node.y + 16);
+      text.setAttribute('class', 'fc-node-text'); text.textContent = node.name;
+      g.appendChild(text);
+      var sub = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      sub.setAttribute('x', node.x + w / 2); sub.setAttribute('y', node.y + 30);
+      sub.setAttribute('class', 'fc-node-sub'); sub.textContent = node.type || '';
+      g.appendChild(sub);
+      if (!node.collapsed) node.children.forEach(function(c) { drawNode(c, false); });
+    }
+    tree.roots.forEach(function(root) { drawNode(root, true); });
+    this._drawLegend(g, W - 160, 12, [
+      { cls: 'world-root', label: '根世界' }, { cls: 'world-branch', label: '分支/势力' }, { cls: 'world-leaf', label: '具体实体' }
+    ]);
+    this._initViewport();
+    this._applyTransform();
+    this._updateCoord();
+  },
+
+  // ========== 角色星座图 ==========
+  _renderCharacterConstellation: function() {
+    var self = this;
+    var svg = document.getElementById('fc-svg');
+    var vp = document.getElementById('fc-viewport');
+    var W = vp.clientWidth, H = vp.clientHeight;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.innerHTML = '';
+    var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'fc-world');
+    svg.appendChild(g);
+    var chars = this._data.characters, rels = this._data.relationships;
+    if (!chars.length) return;
+    var protag = null, others = [];
+    chars.forEach(function(c) {
+      var pf = {};
+      try { pf = JSON.parse(c.profile_json || '{}'); } catch(e) {}
+      if (c.is_protagonist === 1 || pf.is_protagonist) protag = c; else others.push(c);
+    });
+    if (!protag) { protag = chars[0]; others = chars.slice(1); }
+    var cx = W / 2, cy = H / 2;
+    protag._cx = cx; protag._cy = cy; protag._r = 45;
+    var connectedIds = new Set();
+    rels.forEach(function(r) {
+      if (r.from_character_id === protag.id) connectedIds.add(r.to_character_id);
+      if (r.to_character_id === protag.id) connectedIds.add(r.from_character_id);
+    });
+    var connected = others.filter(function(c) { return connectedIds.has(c.id); });
+    var isolated = others.filter(function(c) { return !connectedIds.has(c.id); });
+    var orbitR = 180;
+    connected.forEach(function(c, i) {
+      var angle = (i / Math.max(1, connected.length)) * Math.PI * 2 - Math.PI / 2;
+      c._cx = cx + Math.cos(angle) * orbitR; c._cy = cy + Math.sin(angle) * orbitR; c._r = 35;
+    });
+    var outerR = Math.max(320, orbitR + 100);
+    isolated.forEach(function(c, i) {
+      var angle = (i / Math.max(1, isolated.length)) * Math.PI * 2 + Math.PI / 4;
+      c._cx = cx + Math.cos(angle) * outerR; c._cy = cy + Math.sin(angle) * outerR; c._r = 28;
+    });
+    var allPlaced = [protag].concat(connected).concat(isolated);
+    var relMap = {};
+    chars.forEach(function(c) { relMap[c.id] = c; });
+    rels.forEach(function(r) {
+      var from = relMap[r.from_character_id], to = relMap[r.to_character_id];
+      if (!from || !to || !from._cx || !to._cx) return;
+      var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', from._cx); line.setAttribute('y1', from._cy);
+      line.setAttribute('x2', to._cx); line.setAttribute('y2', to._cy);
+      var cls = 'fc-edge';
+      if (r.relation_type === '敌对') cls += ' relation-hostile';
+      else if (r.relation_type === '同盟') cls += ' relation-ally';
+      else if (r.relation_type === '从属') cls += ' relation-subordinate';
+      else if (r.relation_type === '亲属') cls += ' relation-family';
+      line.setAttribute('class', cls);
+      g.appendChild(line);
+      var mx = (from._cx + to._cx) / 2, my = (from._cy + to._cy) / 2;
+      var label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', mx); label.setAttribute('y', my - 4);
+      label.setAttribute('class', 'fc-node-sub'); label.setAttribute('text-anchor', 'middle');
+      label.textContent = (r.relation_type || '关联').substring(0, 4);
+      g.appendChild(label);
+    });
+    allPlaced.forEach(function(c) {
+      var isProtag = c === protag;
+      var cls = isProtag ? 'char-protag' : (connectedIds.has(c.id) ? 'char-major' : 'char-minor');
+      if (isProtag) {
+        var glow = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        glow.setAttribute('cx', c._cx); glow.setAttribute('cy', c._cy);
+        glow.setAttribute('r', c._r + 15); glow.setAttribute('fill', 'none');
+        glow.setAttribute('stroke', 'rgba(245,166,35,0.15)'); glow.setAttribute('stroke-width', 8);
+        g.appendChild(glow);
+      }
+      var circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', c._cx); circle.setAttribute('cy', c._cy);
+      circle.setAttribute('r', c._r); circle.setAttribute('class', 'fc-node ' + cls);
+      g.appendChild(circle);
+      var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', c._cx); text.setAttribute('y', c._cy + 4);
+      text.setAttribute('class', 'fc-node-text');
+      text.setAttribute('font-size', isProtag ? '12' : '10');
+      text.textContent = (isProtag ? '★' : '') + (c.name.length > 4 ? c.name.substring(0, 4) + '..' : c.name);
+      g.appendChild(text);
+    });
+    this._drawLegend(g, W - 160, 12, [
+      { cls: 'char-protag', label: '主角' }, { cls: 'char-major', label: '关联角色' }, { cls: 'char-minor', label: '独立角色' }
+    ]);
+    this._initViewport();
+    this._applyTransform();
+    this._updateCoord();
+  },
+
+  // ========== 时间线视图 ==========
+  _renderTimeline: function() {
+    var self = this;
+    var svg = document.getElementById('fc-svg');
+    var vp = document.getElementById('fc-viewport');
+    var W = vp.clientWidth, H = vp.clientHeight;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.innerHTML = '';
+    var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'fc-world');
+    svg.appendChild(g);
+    var events = this._data.timeline.slice();
+    if (!events.length) return;
+    events.sort(function(a, b) {
+      var ay = a.absolute_year != null ? a.absolute_year : (a.order_index || 0);
+      var by = b.absolute_year != null ? b.absolute_year : (b.order_index || 0);
+      return ay - by;
+    });
+    var years = events.map(function(e) { return e.absolute_year != null ? e.absolute_year : (e.order_index || 0); });
+    var minYear = Math.min.apply(null, years), maxYear = Math.max.apply(null, years);
+    var yearRange = Math.max(1, maxYear - minYear);
+    var axisY = H / 2, marginX = 80, usableW = W - marginX * 2;
+    var axis = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    axis.setAttribute('x1', marginX); axis.setAttribute('y1', axisY);
+    axis.setAttribute('x2', W - marginX); axis.setAttribute('y2', axisY);
+    axis.setAttribute('class', 'fc-timeline-axis'); g.appendChild(axis);
+    var tickCount = Math.min(12, Math.ceil(yearRange) + 1);
+    for (var i = 0; i <= tickCount; i++) {
+      var year = minYear + (yearRange * i / Math.max(1, tickCount));
+      var tx = marginX + (i / tickCount) * usableW;
+      var tick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      tick.setAttribute('x1', tx); tick.setAttribute('y1', axisY - 6);
+      tick.setAttribute('x2', tx); tick.setAttribute('y2', axisY + 6);
+      tick.setAttribute('class', 'fc-timeline-tick'); g.appendChild(tick);
+      var label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', tx); label.setAttribute('y', axisY + 18);
+      label.setAttribute('class', 'fc-timeline-label'); label.textContent = year.toFixed(0) + '年';
+      g.appendChild(label);
+    }
+    var eraColors = ['rgba(5,163,197,0.06)', 'rgba(168,85,247,0.06)', 'rgba(34,197,94,0.06)', 'rgba(245,166,35,0.06)'];
+    var eraMap = {}, eraIdx = 0;
+    events.forEach(function(e) {
+      var era = e.era_name || '主线';
+      if (!eraMap[era]) { eraMap[era] = { min: Infinity, max: -Infinity, color: eraColors[eraIdx++ % eraColors.length] }; }
+      var yr = e.absolute_year != null ? e.absolute_year : (e.order_index || 0);
+      eraMap[era].min = Math.min(eraMap[era].min, yr);
+      eraMap[era].max = Math.max(eraMap[era].max, yr);
+    });
+    Object.keys(eraMap).forEach(function(era) {
+      var band = eraMap[era];
+      var bx = marginX + ((band.min - minYear) / yearRange) * usableW;
+      var bw = Math.max(30, ((band.max - band.min) / yearRange) * usableW);
+      var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', bx); rect.setAttribute('y', axisY - 32);
+      rect.setAttribute('width', bw); rect.setAttribute('height', 26); rect.setAttribute('rx', 4);
+      rect.setAttribute('fill', band.color); rect.setAttribute('stroke', 'rgba(255,255,255,0.04)'); rect.setAttribute('stroke-width', '0.5');
+      g.appendChild(rect);
+      var eraLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      eraLabel.setAttribute('x', bx + bw / 2); eraLabel.setAttribute('y', axisY - 15);
+      eraLabel.setAttribute('class', 'fc-timeline-label'); eraLabel.setAttribute('font-size', '9'); eraLabel.textContent = era;
+      g.appendChild(eraLabel);
+    });
+    var cardYOff = 45;
+    events.forEach(function(e, idx) {
+      var yr = e.absolute_year != null ? e.absolute_year : (e.order_index || 0);
+      var ex = marginX + ((yr - minYear) / yearRange) * usableW;
+      var isAbove = idx % 2 === 0;
+      var ey = isAbove ? axisY - cardYOff - 50 : axisY + cardYOff + 5;
+      var cardW = Math.min(160, Math.max(100, e.event_name.length * 13 + 20));
+      var conn = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      conn.setAttribute('x1', ex); conn.setAttribute('y1', axisY);
+      conn.setAttribute('x2', ex); conn.setAttribute('y2', isAbove ? ey + 44 : ey);
+      conn.setAttribute('class', 'fc-timeline-tick'); g.appendChild(conn);
+      var cls = 'tl-minor';
+      if (e.event_type === 'major') cls = 'tl-major';
+      else if (e.event_type === 'foreshadow') cls = 'tl-foreshadow';
+      else if (e.event_type === 'payoff') cls = 'tl-payoff';
+      var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', ex - cardW / 2); rect.setAttribute('y', ey);
+      rect.setAttribute('width', cardW); rect.setAttribute('height', 44); rect.setAttribute('rx', 6);
+      rect.setAttribute('class', 'fc-node ' + cls); g.appendChild(rect);
+      var name = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      name.setAttribute('x', ex); name.setAttribute('y', ey + 16);
+      name.setAttribute('class', 'fc-node-text');
+      name.textContent = e.event_name.length > 10 ? e.event_name.substring(0, 10) + '..' : e.event_name;
+      g.appendChild(name);
+      var yrLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      yrLabel.setAttribute('x', ex); yrLabel.setAttribute('y', ey + 32);
+      yrLabel.setAttribute('class', 'fc-node-sub');
+      yrLabel.textContent = (e.era_name || '') + ' ' + yr.toFixed(0) + '年';
+      g.appendChild(yrLabel);
+      if (e.faction_calendars) {
+        try {
+          var fc = typeof e.faction_calendars === 'string' ? JSON.parse(e.faction_calendars) : e.faction_calendars;
+          var fcText = Object.keys(fc).slice(0, 2).map(function(k) { return k + ':' + fc[k]; }).join(' ');
+          if (fcText) {
+            var fcLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            fcLabel.setAttribute('x', ex); fcLabel.setAttribute('y', ey + 42);
+            fcLabel.setAttribute('class', 'fc-node-sub'); fcLabel.setAttribute('font-size', '7');
+            fcLabel.textContent = fcText.substring(0, 30); g.appendChild(fcLabel);
+          }
+        } catch(ignore) {}
+      }
+      var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', ex); dot.setAttribute('cy', axisY); dot.setAttribute('r', 5);
+      var dotColor = e.event_type === 'major' ? '#F53F3F' : (e.event_type === 'foreshadow' ? '#F5A623' : (e.event_type === 'payoff' ? '#22C55E' : '#666'));
+      dot.setAttribute('fill', dotColor); g.appendChild(dot);
+    });
+    this._drawLegend(g, W - 180, 12, [
+      { cls: 'tl-major', label: '核心事件' }, { cls: 'tl-minor', label: '日常事件' },
+      { cls: 'tl-foreshadow', label: '伏笔埋设' }, { cls: 'tl-payoff', label: '伏笔回收' }
+    ]);
+    this._initViewport();
+    this._applyTransform();
+    this._updateCoord();
+  },
+
+  _drawLegend: function(g, x, y, items) {
+    items.forEach(function(item, i) {
+      var iy = y + i * 18;
+      var dot = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      dot.setAttribute('x', x); dot.setAttribute('y', iy);
+      dot.setAttribute('width', 14); dot.setAttribute('height', 10); dot.setAttribute('rx', 3);
+      dot.setAttribute('class', 'fc-node ' + item.cls); g.appendChild(dot);
+      var label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', x + 20); label.setAttribute('y', iy + 9);
+      label.setAttribute('class', 'fc-timeline-label'); label.setAttribute('text-anchor', 'start');
+      label.textContent = item.label; g.appendChild(label);
+    });
+  }
+};
 
 // ===== 上下文占用圆环控件 =====
 var CTX_RING = {
