@@ -1556,7 +1556,7 @@ function executeToolAsync(toolName, argsJson, projectId, userId, streamCallback,
             ctxW += '\n用户需求：'+(args.details||args.core_theme||args.genre||'请生成世界观');
             console.log('[Writing 世界观] 设计开始 项目='+projectId);
             broadcastDevLog('info','server','[Worldview] 世界观设计开始 project='+projectId);
-            callOutlineLLM(projectId, userId, WORLD_EXTRACTION_SYSTEM.replace('提取实体和关系','设计并提取世界观实体和关系'), ctxW, 'world_design', null, function(result) {
+            callOutlineLLM(projectId, userId, DESIGN_WORLDVIEW_SYSTEM, ctxW, 'world_design', null, function(result) {
                 if (result.error) { resolve({ error: result.error, summary: '世界观设计失败: '+result.error }); return; }
                 var summary = '世界观已生成';
                 broadcastDevLog('info','server','[Worldview] LLM返回 contentLen='+(result.content||'').length+' thinkingLen='+(result.thinking||'').length);
@@ -2654,6 +2654,7 @@ app.post('/api/writing-projects/:id/generate-characters', auth, (req, res) => {
 
 // ==================== 世界观提取Agent ====================
 var WORLD_EXTRACTION_SYSTEM = loadPrompt('world_extraction.md');
+var DESIGN_WORLDVIEW_SYSTEM = loadPrompt('design_worldview.md'); // 世界观设计Agent（含文档生成+实体关系提取）
 
 app.post('/api/writing-projects/:id/extract-world', auth, (req, res) => {
     const projectId = parseInt(req.params.id);
