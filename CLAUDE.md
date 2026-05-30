@@ -63,3 +63,54 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+# 项目信息
+
+## 技术栈
+- **后端**: Node.js + Express + sql.js（本地SQLite）
+- **前端**: 原生 HTML/JS/CSS（无框架），SVG 画布
+- **Python**: 辅助脚本（命名表生成、爬虫桥接）
+- **端口**: 3001
+- **启动**: `node server.js`
+
+## 目录结构
+```
+├── server.js              # 主后端（~4800行）
+├── public/
+│   ├── write.html         # 写作模块前端
+│   ├── write.js           # 写作模块JS（~4600行）
+│   ├── canvas.html        # 画布模块（独立）
+│   └── name_pool.json     # 随机命名表（10KB）
+├── prompts/               # 系统提示词（10个.md文件）
+│   ├── orchestrator.md    # 五阶段编排师
+│   ├── design_worldview.md # 世界观设计Agent
+│   ├── character.md       # 角色设计Agent
+│   ├── outliner.md        # 大纲生成Agent
+│   ├── outliner_volume.md # 卷大纲Agent
+│   └── ...
+├── scripts/
+│   └── generate_name_pool.py  # 随机命名表生成
+└── data.db                # SQLite 数据库
+```
+
+## 写作模块五阶段工作流
+1. **需求采访** → 2. **世界观构建** → 3. **角色设计** → 4. **卷蓝图规划** → 5. **大纲生成**
+
+核心原则：每次只问一个问题、不能跳步、按钮即引导。
+
+## 关键数据库表
+- `world_entities` / `world_relations` — 世界观结构
+- `writing_characters` / `relationship_edges` — 角色和关系
+- `writing_volumes` / `writing_chapters` — 大纲（draft→confirmed）
+- `plot_timeline_events` — 时间线事件
+- `story_blueprints` — 故事蓝图
+- `agent_conversations` — 对话历史
+
+## 关键API前缀
+- `/api/writing-projects/:id/` — 写作模块主路由
+- 工具调用: `executeToolAsync()` 匹配 toolName 到具体分支
+- 阶段门控: `_checkStagePrerequisites()`
+- 上下文组装: `_buildAssembledContext()`
+- 提示词加载: `loadPrompt('xxx.md')`
