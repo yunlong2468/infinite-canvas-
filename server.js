@@ -2731,6 +2731,37 @@ app.post('/api/writing-projects/:id/backfill-world', auth, (req, res) => {
     });
 });
 
+// 大纲确认全部 / 推翻全部
+app.post('/api/writing-projects/:id/outline/confirm-all', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    dbRun('UPDATE writing_volumes SET status=? WHERE project_id=? AND status=?', ['confirmed', projectId, 'draft']);
+    dbRun('UPDATE writing_chapters SET status=? WHERE project_id=? AND status=?', ['confirmed', projectId, 'draft']);
+    saveDB();
+    broadcastDevLog('info','server','[Outline] 全部大纲已确认 project='+projectId+' | All outline confirmed');
+    res.json({ ok: true });
+});
+
+app.post('/api/writing-projects/:id/outline/reject-all', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    dbRun('UPDATE writing_volumes SET status=? WHERE project_id=? AND status=?', ['rejected', projectId, 'draft']);
+    dbRun('UPDATE writing_chapters SET status=? WHERE project_id=? AND status=?', ['rejected', projectId, 'draft']);
+    saveDB();
+    broadcastDevLog('info','server','[Outline] 全部大纲已推翻 project='+projectId+' | All outline rejected');
+    res.json({ ok: true });
+});
+
+// 大纲导出
+app.get('/api/writing-projects/:id/outline/export', auth, (req, res) => {
+    var projectId = parseInt(req.params.id);
+    var volumes = queryAll('SELECT * FROM writing_volumes WHERE project_id=? ORDER BY volume_no', [projectId]);
+    var result = [];
+    volumes.forEach(function(vol) {
+        var chapters = queryAll('SELECT chapter_no, title, content_text, status FROM writing_chapters WHERE volume_id=? ORDER BY chapter_no', [vol.id]);
+        result.push({ volume: vol, chapters: chapters });
+    });
+    res.json(result);
+});
+
 // ==================== 大纲Agent ====================
 var OUTLINER_SYSTEM = loadPrompt('outliner.md');
 var OUTLINER_VOLUME_SYSTEM = loadPrompt('outliner_volume.md'); // 阶段五：单卷大纲Agent

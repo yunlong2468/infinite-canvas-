@@ -2339,6 +2339,22 @@ async function doStreamingCall(text) {
             var reqMsg = {type:'system',content:trLabel+' 正在调用 '+trReqLabel+' 工具',time:Date.now()};
             agentMsgs.push(reqMsg);
             if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(reqMsg));
+          } else if (evt.type === 'outline_progress') {
+            // 大纲生成进度通知
+            var progMsg = {type:'system',content:'📋 大纲生成中... ' + evt.completed + '/' + evt.total + ' 卷 (' + (evt.current||'') + ') | Generating outline...',time:Date.now()};
+            agentMsgs.push(progMsg);
+            if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(progMsg));
+            scrollToBottomIfAtBottom();
+          } else if (evt.type === 'outline_draft_ready') {
+            // 大纲草稿就绪——通知用户预览
+            var readyMsg = {type:'system',content:'📋 大纲已生成！共 ' + evt.volumes.length + ' 卷，' + evt.totalChapters + ' 章 [在浮动画布中预览] | Outline ready! ' + evt.volumes.length + ' volumes, ' + evt.totalChapters + ' chapters',time:Date.now()};
+            agentMsgs.push(readyMsg);
+            if (ensureMsgInner()) appendMsgToDOM(renderSingleMsg(readyMsg));
+            // 自动打开浮动画布大纲预览tab
+            setTimeout(function() {
+              FLOATING_CANVAS.open('outline');
+            }, 500);
+            scrollToBottomIfAtBottom();
           } else if (evt.type === 'tool_end') {
             _stopPhraseRotation();
             var toolAgentType = evt.subAgent || _resolveToolAgent(evt.tool);
@@ -3544,7 +3560,18 @@ var FLOATING_CANVAS = {
     var ng = document.getElementById('fc-namegen');
     if (ng) ng.style.display = 'none';
     var svg = document.getElementById('fc-svg');
-    if (svg) svg.style.display = '';
+    var vp = document.getElementById('fc-viewport');
+    var ol = document.getElementById('fc-outline-preview');
+    // 大纲预览tab vs SVG tab
+    if (tab === 'outline') {
+      if (vp) vp.style.display = 'none';
+      if (svg) svg.style.display = 'none';
+      if (ol) ol.classList.add('show');
+    } else {
+      if (vp) vp.style.display = '';
+      if (svg) svg.style.display = '';
+      if (ol) ol.classList.remove('show');
+    }
     // 显示/隐藏命名按钮
     var nameBtn = document.getElementById('fc-name-btn');
     if (nameBtn) nameBtn.style.display = tab === 'character' ? '' : 'none';
@@ -3636,6 +3663,9 @@ var FLOATING_CANVAS = {
           loading.style.display = 'none'; empty.style.display = 'flex';
           self._log('timeline', '❌ 加载失败 | Load failed: ' + err.message, 'error');
         });
+    } else if (tab === 'outline') {
+      loading.style.display = 'none';
+      this._loadOutlineData();
     }
   },
 
@@ -3994,6 +4024,182 @@ var FLOATING_CANVAS = {
     this._initViewport();
     this._applyTransform();
     this._updateCoord();
+  },
+
+  // ========== 大纲预览 ==========
+  _loadOutlineData: function() {
+    var self = this;
+    var headers = { 'Authorization': 'Bearer ' + token };
+    var ol = this._ensureOutlineContainer();
+    ol.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);">加载大纲数据中... | Loading outline...</div>';
+    fetch(API + '/writing-projects/' + projectId + '/volumes', { headers: headers })
+      .then(function(r) { return r.json(); })
+      .then(function(volumes) {
+        if (volumes.error || !volumes.length) {
+          ol.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);">暂无大纲数据<br><span style="font-size:11px;color:rgba(255,255,255,0.15);">完成阶段四卷蓝图规划后，在对话中生成大纲即可 | Generate outline after stage 4</span></div>';
+          return;
+        }
+        // 为每卷加载章节
+        var promises = volumes.map(function(vol) {
+          return fetch(API + '/writing-projects/' + projectId + '/chapters?volume_id=' + vol.id, { headers: headers })
+            .then(function(r) { return r.json(); })
+            .then(function(chapters) { vol._chapters = chapters.error ? [] : chapters; return vol; });
+        });
+        return Promise.all(promises);
+      })
+      .then(function(volumesWithChapters) {
+        if (volumesWithChapters) self._renderOutlinePreview(volumesWithChapters);
+      })
+      .catch(function(err) {
+        ol.innerHTML = '<div style="text-align:center;padding:40px;color:#F53F3F;">加载失败: '+escHtml(err.message)+' | Load failed</div>';
+        self._log('outline', '加载失败: ' + err.message, 'error');
+      });
+  },
+
+  _ensureOutlineContainer: function() {
+    var ol = document.getElementById('fc-outline-preview');
+    if (!ol) {
+      ol = document.createElement('div');
+      ol.id = 'fc-outline-preview';
+      document.getElementById('fc-canvas').insertBefore(ol, document.getElementById('fc-info'));
+    }
+    return ol;
+  },
+
+  _renderOutlinePreview: function(volumes) {
+    var self = this;
+    var ol = this._ensureOutlineContainer();
+    var confirmed = volumes.filter(function(v) { return v.status === 'confirmed'; }).length;
+    var html = '<div class="ol-actions">';
+    html += '<button class="ol-btn ol-btn-confirm" onclick="FLOATING_CANVAS._confirmAllOutline()">确认全部卷</button>';
+    html += '<button class="ol-btn ol-btn-reject" onclick="FLOATING_CANVAS._rejectAllOutline()">推翻重来</button>';
+    html += '<button class="ol-btn" onclick="FLOATING_CANVAS._exportOutline()">导出JSON</button>';
+    html += '<span class="ol-status">已确认 ' + confirmed + '/' + volumes.length + ' 卷 | Confirmed</span>';
+    html += '</div><div class="ol-volumes">';
+
+    volumes.forEach(function(vol) {
+      var isConfirmed = vol.status === 'confirmed';
+      var chs = vol._chapters || [];
+      html += '<div class="ol-volume' + (isConfirmed ? ' confirmed' : '') + '" data-volume-id="' + vol.id + '">';
+      html += '<div class="ol-vol-header" onclick="FLOATING_CANVAS._toggleVolumeChapters(' + vol.id + ')">';
+      html += '<span class="ol-vol-toggle" id="ol-toggle-' + vol.id + '">▼</span>';
+      html += '<span class="ol-vol-title">' + escHtml(vol.title || '未命名卷') + '</span>';
+      html += '<span class="ol-vol-meta">' + chs.length + '章 | ' + escHtml((vol.summary || '').substring(0, 50)) + '</span>';
+      html += '<div class="ol-vol-btns" onclick="event.stopPropagation()">';
+      if (!isConfirmed) {
+        html += '<button class="ol-btn-sm ol-btn-accept" onclick="FLOATING_CANVAS._confirmVolume(' + vol.id + ')">确认</button>';
+        html += '<button class="ol-btn-sm" onclick="FLOATING_CANVAS._toggleAnnotation(' + vol.id + ')">批注</button>';
+        html += '<button class="ol-btn-sm ol-btn-redo" onclick="FLOATING_CANVAS._requestRegenVolume(' + vol.id + ')">重生成</button>';
+      } else {
+        html += '<span style="font-size:10px;color:#22C55E">已确认</span>';
+      }
+      html += '</div></div>';
+      // 批注
+      html += '<div class="ol-annotation" id="ol-annot-' + vol.id + '" style="display:none" onclick="event.stopPropagation()">';
+      html += '<textarea id="ol-annot-text-' + vol.id + '" placeholder="输入批注意见... | Annotation notes...">' + escHtml(vol.notes || '') + '</textarea>';
+      html += '<button class="ol-btn-sm" onclick="FLOATING_CANVAS._saveAnnotation(' + vol.id + ')">保存批注 | Save</button>';
+      html += '</div>';
+      // 章列表
+      html += '<div class="ol-chapters" id="ol-ch-' + vol.id + '">';
+      chs.forEach(function(ch) {
+        var chContent = ch.content_text || ch.summary || '';
+        html += '<div class="ol-chapter">';
+        html += '<div class="ol-ch-header">';
+        html += '<span class="ol-ch-num">第' + ch.chapter_no + '章</span>';
+        html += '<span class="ol-ch-title">' + escHtml(ch.title || '') + '</span>';
+        html += '</div>';
+        if (chContent) html += '<div class="ol-ch-summary">' + escHtml(chContent.substring(0, 300)) + '</div>';
+        html += '</div>';
+      });
+      html += '</div></div>';
+    });
+    html += '</div>';
+    ol.innerHTML = html;
+    this._log('outline', '大纲预览已渲染 卷=' + volumes.length + ' 已确认=' + confirmed + ' | Rendered volumes=' + volumes.length + ' confirmed=' + confirmed);
+  },
+
+  _toggleVolumeChapters: function(volId) {
+    var el = document.getElementById('ol-ch-' + volId);
+    var toggle = document.getElementById('ol-toggle-' + volId);
+    if (el) {
+      var hidden = el.style.display === 'none';
+      el.style.display = hidden ? '' : 'none';
+      if (toggle) toggle.textContent = hidden ? '▼' : '▶';
+    }
+  },
+
+  _toggleAnnotation: function(volId) {
+    var el = document.getElementById('ol-annot-' + volId);
+    if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+  },
+
+  _saveAnnotation: function(volId) {
+    var text = document.getElementById('ol-annot-text-' + volId).value;
+    var self = this;
+    api('PUT', '/writing-projects/' + projectId + '/volumes/' + volId, { notes: text })
+      .then(function() {
+        self._toggleAnnotation(volId);
+        toast('批注已保存 | Annotation saved');
+      });
+  },
+
+  _confirmVolume: function(volId) {
+    var self = this;
+    api('PUT', '/writing-projects/' + projectId + '/volumes/' + volId, { status: 'confirmed' })
+      .then(function() { self._loadOutlineData(); toast('卷已确认 | Volume confirmed'); });
+  },
+
+  _confirmAllOutline: function() {
+    var self = this;
+    if (!confirm('确认全部大纲？确认后将通知编排师继续 | Confirm all? This will notify the orchestrator.')) return;
+    api('POST', '/writing-projects/' + projectId + '/outline/confirm-all', {})
+      .then(function() {
+        toast('全部大纲已确认 | All confirmed');
+        self.close();
+      });
+  },
+
+  _rejectAllOutline: function() {
+    var self = this;
+    if (!confirm('确定推翻全部大纲？此操作不可恢复 | Reject all? This cannot be undone.')) return;
+    api('POST', '/writing-projects/' + projectId + '/outline/reject-all', {})
+      .then(function() {
+        toast('全部大纲已推翻 | All rejected');
+        self.close();
+      });
+  },
+
+  _requestRegenVolume: function(volId) {
+    var annotText = document.getElementById('ol-annot-text-' + volId);
+    var notes = annotText ? annotText.value : '';
+    var self = this;
+    api('POST', '/writing-projects/' + projectId + '/volumes/' + volId + '/regenerate', { notes: notes })
+      .then(function() {
+        toast('重生成请求已提交 | Regeneration requested');
+        setTimeout(function() { self._loadOutlineData(); }, 3000);
+      });
+  },
+
+  _exportOutline: function() {
+    var headers = { 'Authorization': 'Bearer ' + token };
+    fetch(API + '/writing-projects/' + projectId + '/volumes', { headers: headers })
+      .then(function(r) { return r.json(); })
+      .then(function(volumes) {
+        var promises = volumes.map(function(vol) {
+          return fetch(API + '/writing-projects/' + projectId + '/chapters?volume_id=' + vol.id, { headers: headers })
+            .then(function(r) { return r.json(); })
+            .then(function(chs) { vol.chapters = chs; return vol; });
+        });
+        return Promise.all(promises);
+      })
+      .then(function(data) {
+        var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = 'outline_project_' + projectId + '.json';
+        a.click(); URL.revokeObjectURL(url);
+        toast('大纲已导出 | Outline exported');
+      });
   },
 
   _drawLegend: function(g, x, y, items) {
